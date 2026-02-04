@@ -125,25 +125,27 @@ export function calculateDecisionGate(
   const timeSpent = costTracker.getElapsedMs();
   const agreementLevel = metrics.agreementLevel * 100; // Convert to percentage
 
-  // Check for critical blockers first
-  const criticalBlockers = openBlockers.filter(
-    b => (b.status === 'open' || b.status === 'escalated') && 
-         b.severity >= 4 && b.confidence >= 4
-  );
+  // Check for critical blockers (only gates when requireHumanDecision is enabled)
+  if (limits.requireHumanDecision) {
+    const criticalBlockers = openBlockers.filter(
+      b => (b.status === 'open' || b.status === 'escalated') &&
+           b.severity >= 4 && b.confidence >= 4
+    );
 
-  if (criticalBlockers.length > 0) {
-    return {
-      name: 'Decision Gate',
-      condition: 'needs-human',
-      metrics: {
-        agreementLevel,
-        costSpent,
-        costLimit,
-        blockerCount: criticalBlockers.length,
-        timeSpent,
-      },
-      recommendation: `${criticalBlockers.length} critical blocker(s) require human decision. Review blockers and provide guidance.`,
-    };
+    if (criticalBlockers.length > 0) {
+      return {
+        name: 'Decision Gate',
+        condition: 'needs-human',
+        metrics: {
+          agreementLevel,
+          costSpent,
+          costLimit,
+          blockerCount: criticalBlockers.length,
+          timeSpent,
+        },
+        recommendation: `${criticalBlockers.length} critical blocker(s) require human decision. Review blockers and provide guidance.`,
+      };
+    }
   }
 
   // NO-GO conditions
