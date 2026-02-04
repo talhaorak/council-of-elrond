@@ -1,6 +1,6 @@
 {
-  "name": "council-of-elrond",
-  "version": "1.0.0",
+  "name": "@talhaorak/council-of-elrond",
+  "version": "1.0.1",
   "description": "Multi-agent AI consensus system with TUI and Web interfaces",
   "type": "module",
   "main": "./dist/index.js",
