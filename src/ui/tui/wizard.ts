@@ -22,6 +22,7 @@ import {
   ARCHETYPE_DESCRIPTIONS,
   SUGGESTED_TEAMS,
 } from '../../config/schema.js';
+import { loadTeamTemplates, type LoadedTeam } from '../../config/teams.js';
 import type { Provider, PersonalityArchetype } from '../../core/types.js';
 
 interface AgentConfig {
@@ -393,28 +394,118 @@ async function configureLocalUrls(config: ProvidersConfig): Promise<ProvidersCon
 async function configureAgents(providersConfig: ProvidersConfig): Promise<AgentConfig[]> {
   console.log(chalk.bold('\n👥 Step 2: Agent Configuration\n'));
 
+  // Load team templates
+  const teams = await loadTeamTemplates();
+  const hasTeamTemplates = teams.length > 0;
+
+  const choices = [
+    { name: '🎭 Use a team template (pre-configured)', value: 'template', disabled: !hasTeamTemplates },
+    { name: '🎯 Use a suggested team (same provider for all)', value: 'suggested' },
+    { name: '🔧 Custom agents (choose provider/model per agent)', value: 'custom' },
+    { name: '⚡ Quick setup (2 agents: optimist vs skeptic)', value: 'quick' },
+  ];
+
   const { teamChoice } = await inquirer.prompt([
     {
       type: 'list',
       name: 'teamChoice',
       message: 'How would you like to configure agents?',
-      choices: [
-        { name: '🎯 Use a suggested team (same provider for all)', value: 'suggested' },
-        { name: '🔧 Custom agents (choose provider/model per agent)', value: 'custom' },
-        { name: '⚡ Quick setup (2 agents: optimist vs skeptic)', value: 'quick' },
-      ],
+      choices: choices.filter(c => !c.disabled),
     },
   ]);
 
   const configuredProviders = getConfiguredProviders(providersConfig);
 
-  if (teamChoice === 'suggested') {
+  if (teamChoice === 'template') {
+    return configureFromTemplate(teams);
+  } else if (teamChoice === 'suggested') {
     return configureSuggestedTeam(providersConfig, configuredProviders);
   } else if (teamChoice === 'quick') {
     return configureQuickTeam(providersConfig, configuredProviders);
   } else {
     return configureCustomAgents(providersConfig, configuredProviders);
   }
+}
+
+/**
+ * Configure agents from a team template
+ */
+async function configureFromTemplate(teams: LoadedTeam[]): Promise<AgentConfig[]> {
+  console.log(chalk.dim('\n📚 Available Team Templates:\n'));
+
+  const { teamId } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'teamId',
+      message: 'Select a team template:',
+      choices: teams.map(team => {
+        const icon = team.icon || '🤖';
+        const agentCount = `${team.agents.length} agents`;
+        const tags = team.tags ? chalk.dim(` [${team.tags.join(', ')}]`) : '';
+        return {
+          name: `${icon} ${team.name} - ${agentCount}${tags}`,
+          value: team.id,
+          short: team.name,
+        };
+      }),
+      loop: false,
+      pageSize: 15,
+    },
+  ]);
+
+  const selectedTeam = teams.find(t => t.id === teamId);
+  if (!selectedTeam) {
+    throw new Error('Team template not found');
+  }
+
+  const team = selectedTeam;
+
+  // Show team description and ask for confirmation
+  console.log(chalk.cyan(`\n${team.name}\n`));
+  console.log(chalk.dim(team.description.trim()));
+  console.log('');
+  
+  console.log(chalk.bold('Agents:'));
+  for (const agent of team.agents) {
+    const personalityLabel = typeof agent.personality === 'string' 
+      ? agent.personality 
+      : (agent.personality.base || agent.personality.name || 'custom');
+    console.log(`  ${chalk.cyan(agent.name)} - ${chalk.dim(personalityLabel)}`);
+    console.log(`    ${chalk.dim(agent.description || '')}`);
+    console.log(`    ${chalk.yellow(`${agent.provider}/${agent.model}`)}`);
+  }
+  console.log('');
+
+  if (team.recommended_depth) {
+    console.log(chalk.dim(`Recommended depth: ${team.recommended_depth} rounds\n`));
+  }
+
+  const { confirm } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'confirm',
+      message: 'Use this team?',
+      default: true,
+    },
+  ]);
+
+  if (!confirm) {
+    // Recurse to select another team
+    return configureFromTemplate(teams);
+  }
+
+  // Convert team template agents to AgentConfig format
+  // Note: The actual personality objects will be loaded by the config loader
+  return team.agents.map((agent: any) => {
+    const p = agent.personality;
+    const personalityId = typeof p === 'string' ? p : (p.name || p.base || 'custom');
+    return {
+      provider: agent.provider as Provider,
+      model: agent.model,
+      personality: personalityId,
+      name: agent.name,
+    };
+  });
 }
 
 /**

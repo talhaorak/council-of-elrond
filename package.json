@@ -1,21 +1,56 @@
 {
-  "name": "bot-consensus",
+  "name": "council-of-elrond",
   "version": "1.0.0",
   "description": "Multi-agent AI consensus system with TUI and Web interfaces",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "consensus": "./src/cli.ts"
+    "consensus": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "templates",
+    "README.md",
+    "LICENSE",
+    "SKILL.md"
+  ],
   "scripts": {
     "dev": "bun run src/cli.ts",
     "dev:web": "bun run src/ui/web/server.ts",
     "dev:tui": "bun run src/cli.ts --tui",
-    "build": "bun build src/cli.ts --outdir dist --target node",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "build:web": "cd web && bun run build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "bun test"
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "ai",
+    "consensus",
+    "multi-agent",
+    "llm",
+    "gpt",
+    "claude",
+    "gemini",
+    "openai",
+    "anthropic",
+    "discussion",
+    "debate",
+    "tui",
+    "cli"
+  ],
+  "author": "Talha Orak <talha.orak@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/talhaorak/council-of-elrond.git"
+  },
+  "homepage": "https://github.com/talhaorak/council-of-elrond#readme",
+  "bugs": {
+    "url": "https://github.com/talhaorak/council-of-elrond/issues"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.26.0",

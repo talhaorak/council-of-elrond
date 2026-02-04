@@ -33,6 +33,22 @@ export class StructuredStateManager {
   }
 
   /**
+   * Load an existing structured state
+   */
+  loadState(state: StructuredState): void {
+    this.state = StructuredStateManager.cloneState(state);
+  }
+
+  /**
+   * Create a manager from a saved structured state
+   */
+  static fromState(state: StructuredState): StructuredStateManager {
+    const manager = new StructuredStateManager(state.problem, state.constraints);
+    manager.loadState(state);
+    return manager;
+  }
+
+  /**
    * Get current state
    */
   getState(): StructuredState {
@@ -360,5 +376,28 @@ export class StructuredStateManager {
     }
 
     return manager;
+  }
+
+  private static cloneState(state: StructuredState): StructuredState {
+    return {
+      ...state,
+      constraints: [...state.constraints],
+      options: state.options.map((option) => ({
+        ...option,
+        supporters: [...option.supporters],
+        opponents: [...option.opponents],
+        pros: [...option.pros],
+        cons: [...option.cons],
+        risks: [...option.risks],
+      })),
+      openQuestions: [...state.openQuestions],
+      decisions: state.decisions.map((decision) => ({
+        ...decision,
+        madeAt: new Date(decision.madeAt),
+        supporters: [...decision.supporters],
+      })),
+      blockers: state.blockers.map((blocker) => ({ ...blocker })),
+      consensusLevel: state.consensusLevel,
+    };
   }
 }

@@ -23,8 +23,9 @@ export const DEFAULT_LIMITS: DiscussionLimits = {
   maxCostUsd: 5.0,                    // $5 max per discussion
   maxDurationMs: 10 * 60 * 1000,      // 10 minutes max
   maxTokens: 100000,                   // 100k tokens max
-  maxBlockers: 5,                      // 5 unresolved blockers triggers abort
+  maxBlockers: 20,                     // 20 unresolved blockers triggers abort
   maxConsecutiveDisagreements: 3,      // 3 consecutive disagreements triggers arbitration
+  requireHumanDecision: false,
 };
 
 /**
@@ -87,17 +88,19 @@ export function checkLimits(
     }
   }
 
-  // Check for critical blockers that need human decision
-  const criticalBlockers = openBlockers.filter(
-    b => (b.status === 'open' || b.status === 'escalated') && 
-         b.severity >= 4 && b.confidence >= 4
-  );
-  if (criticalBlockers.length > 0) {
-    logger.warn('Limits', `${criticalBlockers.length} critical blocker(s) need human decision`);
-    return {
-      type: 'needs_human',
-      blockers: criticalBlockers,
-    };
+  // Check for critical blockers that need human decision (optional)
+  if (limits.requireHumanDecision) {
+    const criticalBlockers = openBlockers.filter(
+      b => (b.status === 'open' || b.status === 'escalated') && 
+           b.severity >= 4 && b.confidence >= 4
+    );
+    if (criticalBlockers.length > 0) {
+      logger.warn('Limits', `${criticalBlockers.length} critical blocker(s) need human decision`);
+      return {
+        type: 'needs_human',
+        blockers: criticalBlockers,
+      };
+    }
   }
 
   return null;

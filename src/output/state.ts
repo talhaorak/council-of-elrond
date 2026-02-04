@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises';
 import { join } from 'path';
-import type { SessionState, ConsensusOutput } from '../core/types.js';
+import type { SessionState, Message, StructuredState, CostEntry, ArbiterDecision } from '../core/types.js';
 
 const STATE_DIR = '.consensus';
 
@@ -48,7 +48,8 @@ export class SessionManager {
     try {
       const filepath = join(this.baseDir, `${sessionId}.json`);
       const content = await readFile(filepath, 'utf-8');
-      return JSON.parse(content) as SessionState;
+      const parsed = JSON.parse(content) as SessionState;
+      return rehydrateSession(parsed);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
@@ -153,7 +154,7 @@ export function importSession(data: string): SessionState {
     throw new Error('Invalid session export format');
   }
   
-  return parsed.session as SessionState;
+  return rehydrateSession(parsed.session as SessionState);
 }
 
 /**
@@ -173,4 +174,70 @@ Messages: ${messageCount}
 Created: ${new Date(session.createdAt).toLocaleString()}
 Updated: ${new Date(session.updatedAt).toLocaleString()}
 `.trim();
+}
+
+function toDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return new Date();
+}
+
+function rehydrateMessages(messages: Message[]): Message[] {
+  return messages.map((message) => ({
+    ...message,
+    timestamp: toDate((message as { timestamp: unknown }).timestamp),
+  }));
+}
+
+function rehydrateStructuredState(state: StructuredState): StructuredState {
+  return {
+    ...state,
+    constraints: [...state.constraints],
+    options: state.options.map((option) => ({
+      ...option,
+      supporters: [...option.supporters],
+      opponents: [...option.opponents],
+      pros: [...option.pros],
+      cons: [...option.cons],
+      risks: [...option.risks],
+    })),
+    openQuestions: [...state.openQuestions],
+    decisions: state.decisions.map((decision) => ({
+      ...decision,
+      madeAt: toDate(decision.madeAt),
+      supporters: [...decision.supporters],
+    })),
+    blockers: state.blockers.map((blocker) => ({ ...blocker })),
+  };
+}
+
+function rehydrateCostEntries(entries: CostEntry[]): CostEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    timestamp: toDate(entry.timestamp),
+  }));
+}
+
+function rehydrateArbiterDecisions(decisions: ArbiterDecision[]): ArbiterDecision[] {
+  return decisions.map((decision) => ({
+    ...decision,
+    timestamp: toDate(decision.timestamp),
+  }));
+}
+
+export function rehydrateSession(session: SessionState): SessionState {
+  return {
+    ...session,
+    createdAt: toDate(session.createdAt),
+    updatedAt: toDate(session.updatedAt),
+    messages: rehydrateMessages(session.messages || []),
+    structuredState: session.structuredState ? rehydrateStructuredState(session.structuredState) : session.structuredState,
+    costEntries: session.costEntries ? rehydrateCostEntries(session.costEntries) : session.costEntries,
+    arbiterDecisions: session.arbiterDecisions ? rehydrateArbiterDecisions(session.arbiterDecisions) : session.arbiterDecisions,
+  };
 }

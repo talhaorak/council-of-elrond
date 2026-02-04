@@ -180,6 +180,13 @@ app.post('/api/discussions', async (c) => {
       moderatorProvider: body.moderator?.provider,
       moderatorModel: body.moderator?.model,
     });
+    
+    if (body.limits) {
+      config.limits = {
+        ...config.limits,
+        ...body.limits,
+      };
+    }
 
     // Save config to workspace before starting
     if (currentWorkspace) {
@@ -277,7 +284,11 @@ app.post('/api/sessions/:id/continue', async (c) => {
   const body = await c.req.json();
   const additionalRounds = body.additionalRounds || 2;
 
-  const engine = await ConsensusEngine.resume(session, additionalRounds);
+  const engine = await ConsensusEngine.resume(session, additionalRounds, {
+    humanDecision: body.humanDecision,
+    resolveBlockers: body.resolveBlockers,
+    overrideLimits: body.overrideLimits,
+  });
 
   return streamSSE(c, async (stream) => {
     // Set up keep-alive interval to prevent timeout
@@ -446,6 +457,64 @@ const api = {
     const res = await fetch('/api/sessions/' + id);
     return res.json();
   },
+  continueSession(id, payload, onEvent) {
+    const seenEvents = new Set();
+    return new Promise((resolve, reject) => {
+      fetch('/api/sessions/' + id + '/continue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(response => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function processChunk() {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              resolve();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+
+                  let eventKey = data.type;
+                  if (data.message?.timestamp) {
+                    eventKey += ':' + data.message.timestamp;
+                  }
+                  if (data.message?.agentId) {
+                    eventKey += ':' + data.message.agentId;
+                  }
+
+                  if (data.type === 'agent_message_complete' || data.type === 'moderator_message_complete') {
+                    if (!seenEvents.has(eventKey)) {
+                      seenEvents.add(eventKey);
+                      onEvent(data);
+                    }
+                  } else {
+                    onEvent(data);
+                  }
+                } catch (e) {
+                  console.error('[SSE] Parse error:', e);
+                }
+              }
+            }
+
+            processChunk();
+          }).catch(reject);
+        }
+
+        processChunk();
+      }).catch(reject);
+    });
+  },
   startDiscussion(config, onEvent) {
     const seenEvents = new Set();
     
@@ -516,6 +585,28 @@ const api = {
 // ============================================================================
 // Components
 // ============================================================================
+
+function formatAbortReason(reason) {
+  if (!reason) return '';
+  switch (reason.type) {
+    case 'needs_human':
+      return 'Paused for human decision: critical blockers must be reviewed.';
+    case 'blocker_limit':
+      return 'Stopped: blocker limit exceeded (' + reason.count + ' >= ' + reason.limit + ').';
+    case 'cost_limit':
+      return 'Stopped: cost limit exceeded ($' + reason.spent.toFixed(2) + ' > $' + reason.limit.toFixed(2) + ').';
+    case 'time_limit':
+      return 'Stopped: time limit exceeded (' + Math.round(reason.elapsed / 1000) + 's > ' + Math.round(reason.limit / 1000) + 's).';
+    case 'token_limit':
+      return 'Stopped: token limit exceeded (' + reason.used + ' > ' + reason.limit + ').';
+    case 'deadlock':
+      return 'Stopped: deadlock detected. ' + reason.description;
+    case 'user_interrupt':
+      return 'Stopped by user (' + reason.interruptType + ').';
+    default:
+      return 'Discussion stopped due to limits.';
+  }
+}
 
 function Header() {
   return h('header', { className: 'bg-gray-800 border-b border-gray-700 px-6 py-4' },
@@ -920,6 +1011,13 @@ function App() {
   const [selectedProvider, setSelectedProvider] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [agents, setAgents] = useState([]);
+  const [limits, setLimits] = useState({
+    maxCostUsd: 5.0,
+    maxDurationMinutes: 10,
+    maxTokens: 100000,
+    maxBlockers: 20,
+    requireHumanDecision: false,
+  });
   
   // Discussion state
   const [isRunning, setIsRunning] = useState(false);
@@ -935,6 +1033,9 @@ function App() {
   const [totalTokens, setTotalTokens] = useState(0);
   const [blockers, setBlockers] = useState([]);
   const [decisionGate, setDecisionGate] = useState(null);
+  const [abortReason, setAbortReason] = useState(null);
+  const [humanDecisionText, setHumanDecisionText] = useState('');
+  const [isContinuing, setIsContinuing] = useState(false);
 
   // Agent modal state
   const [showAgentModal, setShowAgentModal] = useState(false);
@@ -1001,12 +1102,29 @@ function App() {
     setView('discussion');
     setIsRunning(true);
     setMessages([]);
+    setAbortReason(null);
+    setDecisionGate(null);
+    setBlockers([]);
+    setCurrentPhase('');
+    setCurrentRound(0);
+    setStreamingContent('');
+    setCurrentSpeaker('');
+    setTotalCost(0);
+    setTotalTokens(0);
+    setSessionId('');
     
     const config = {
       topic,
       depth,
       agents: agents.map(a => a.provider + ':' + a.model + ':' + a.personality),
-      moderator: { provider: selectedProvider, model: selectedModel }
+      moderator: { provider: selectedProvider, model: selectedModel },
+      limits: {
+        maxCostUsd: limits.maxCostUsd,
+        maxDurationMs: limits.maxDurationMinutes * 60 * 1000,
+        maxTokens: limits.maxTokens,
+        maxBlockers: limits.maxBlockers,
+        requireHumanDecision: limits.requireHumanDecision,
+      }
     };
 
     try {
@@ -1093,6 +1211,9 @@ function App() {
             break;
           case 'abort':
             setIsRunning(false);
+            setAbortReason(event.reason);
+            setCurrentSpeaker('');
+            setStreamingContent('');
             console.warn('Discussion aborted:', event.reason);
             break;
         }
@@ -1100,6 +1221,107 @@ function App() {
     } catch (error) {
       console.error('Discussion error:', error);
       setIsRunning(false);
+    }
+  };
+
+  const handleContinue = async (payload) => {
+    if (!sessionId) return;
+    setIsContinuing(true);
+    setIsRunning(true);
+    setAbortReason(null);
+
+    try {
+      await api.continueSession(sessionId, payload, (event) => {
+        switch (event.type) {
+          case 'phase_change':
+            setCurrentPhase(event.phase);
+            setCurrentRound(event.round);
+            break;
+          case 'agent_speaking':
+            setCurrentSpeaker(event.agentName);
+            setStreamingContent('');
+            break;
+          case 'agent_thinking':
+            setStreamingContent('Thinking... (' + event.elapsed + 's)');
+            break;
+          case 'agent_message_chunk':
+            setStreamingContent(prev => prev + event.content);
+            break;
+          case 'agent_message_complete':
+            setMessages(prev => {
+              const exists = prev.some(m =>
+                m.agentId === event.message.agentId &&
+                m.timestamp === event.message.timestamp
+              );
+              if (exists) return prev;
+              return [...prev, event.message];
+            });
+            setCurrentSpeaker('');
+            setStreamingContent('');
+            break;
+          case 'moderator_speaking':
+            setCurrentSpeaker('Moderator');
+            setStreamingContent('');
+            break;
+          case 'moderator_thinking':
+            setStreamingContent('Thinking... (' + event.elapsed + 's)');
+            break;
+          case 'moderator_message_chunk':
+            setStreamingContent(prev => prev + event.content);
+            break;
+          case 'moderator_message_complete':
+            setMessages(prev => {
+              const exists = prev.some(m =>
+                m.type === 'moderator' &&
+                m.timestamp === event.message.timestamp
+              );
+              if (exists) return prev;
+              return [...prev, { ...event.message, type: 'moderator' }];
+            });
+            setCurrentSpeaker('');
+            setStreamingContent('');
+            break;
+          case 'session_complete':
+            setSessionId(event.output?.session?.id || '');
+            setIsRunning(false);
+            if (event.output?.session?.costSummary) {
+              setTotalCost(event.output.session.costSummary.totalCost);
+              setTotalTokens(event.output.session.costSummary.totalTokens?.totalTokens || 0);
+            }
+            break;
+          case 'cost_update':
+            setTotalCost(event.totalCost);
+            if (event.cost?.tokens) {
+              setTotalTokens(prev => prev + (event.cost.tokens.totalTokens || 0));
+            }
+            break;
+          case 'blocker_raised':
+            setBlockers(prev => [...prev, event.blocker]);
+            break;
+          case 'blocker_resolved':
+            setBlockers(prev => prev.map(b =>
+              b.id === event.blockerId
+                ? { ...b, status: 'addressed', resolution: event.resolution }
+                : b
+            ));
+            break;
+          case 'decision_gate':
+            setDecisionGate(event.gate);
+            break;
+          case 'abort':
+            setIsRunning(false);
+            setAbortReason(event.reason);
+            setCurrentSpeaker('');
+            setStreamingContent('');
+            console.warn('Discussion aborted:', event.reason);
+            break;
+        }
+      });
+    } catch (error) {
+      console.error('Continue error:', error);
+      setIsRunning(false);
+    } finally {
+      setIsContinuing(false);
     }
   };
 
@@ -1113,7 +1335,8 @@ function App() {
           h(WizardStep, { step: 1, title: 'Topic', description: 'What to discuss', isActive: step === 1, isComplete: step > 1 }),
           h(WizardStep, { step: 2, title: 'Provider', description: 'AI backend', isActive: step === 2, isComplete: step > 2 }),
           h(WizardStep, { step: 3, title: 'Agents', description: 'Personalities', isActive: step === 3, isComplete: step > 3 }),
-          h(WizardStep, { step: 4, title: 'Start', description: 'Begin discussion', isActive: step === 4, isComplete: false })
+          h(WizardStep, { step: 4, title: 'Limits', description: 'Safety + budget', isActive: step === 4, isComplete: step > 4 }),
+          h(WizardStep, { step: 5, title: 'Start', description: 'Begin discussion', isActive: step === 5, isComplete: false })
         ),
 
         // Step content
@@ -1221,21 +1444,125 @@ function App() {
             })
           ),
 
-          // Step 4: Review & Start
+          // Step 4: Limits
           step === 4 && h('div', null,
+            h('h2', { className: 'text-xl font-bold mb-4' }, 'Limits & Safeguards'),
+            h('div', { className: 'grid grid-cols-1 md:grid-cols-2 gap-4' },
+              h('div', null,
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Max Cost (USD)'),
+                h('input', {
+                  type: 'number',
+                  min: 0,
+                  step: 0.1,
+                  value: limits.maxCostUsd,
+                  onChange: e => setLimits({ ...limits, maxCostUsd: parseFloat(e.target.value) || 0 }),
+                  className: 'w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white'
+                })
+              ),
+              h('div', null,
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Max Time (minutes)'),
+                h('input', {
+                  type: 'number',
+                  min: 1,
+                  step: 1,
+                  value: limits.maxDurationMinutes,
+                  onChange: e => setLimits({ ...limits, maxDurationMinutes: parseInt(e.target.value) || 1 }),
+                  className: 'w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white'
+                })
+              ),
+              h('div', null,
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Max Tokens'),
+                h('input', {
+                  type: 'number',
+                  min: 1000,
+                  step: 1000,
+                  value: limits.maxTokens,
+                  onChange: e => setLimits({ ...limits, maxTokens: parseInt(e.target.value) || 0 }),
+                  className: 'w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white'
+                })
+              ),
+              h('div', null,
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Max Open Blockers'),
+                h('input', {
+                  type: 'number',
+                  min: 1,
+                  step: 1,
+                  value: limits.maxBlockers,
+                  onChange: e => setLimits({ ...limits, maxBlockers: parseInt(e.target.value) || 1 }),
+                  className: 'w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white'
+                })
+              )
+            ),
+            h('div', { className: 'mt-4' },
+              h('label', { className: 'flex items-center gap-2 text-sm text-gray-300' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: limits.requireHumanDecision,
+                  onChange: e => setLimits({ ...limits, requireHumanDecision: e.target.checked }),
+                  className: 'accent-primary'
+                }),
+                'Pause and require human decision when critical blockers are raised'
+              )
+            )
+          ),
+
+          // Step 5: Review & Start
+          step === 5 && h('div', null,
             h('h2', { className: 'text-xl font-bold mb-4' }, 'Review & Start'),
             h('div', { className: 'space-y-4 mb-6' },
               h('div', null,
-                h('span', { className: 'text-gray-400' }, 'Topic: '),
-                h('span', { className: 'text-white' }, topic)
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Topic'),
+                h('textarea', {
+                  value: topic,
+                  onChange: e => setTopic(e.target.value),
+                  className: 'w-full h-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-primary resize-none'
+                })
               ),
               h('div', null,
-                h('span', { className: 'text-gray-400' }, 'Depth: '),
-                h('span', { className: 'text-white' }, depth + ' rounds')
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Depth (rounds)'),
+                h('div', { className: 'flex items-center gap-4' },
+                  h('input', {
+                    type: 'range',
+                    min: 2,
+                    max: 5,
+                    value: depth,
+                    onChange: e => setDepth(parseInt(e.target.value)),
+                    className: 'flex-1'
+                  }),
+                  h('input', {
+                    type: 'number',
+                    min: 2,
+                    max: 5,
+                    value: depth,
+                    onChange: e => setDepth(parseInt(e.target.value)),
+                    className: 'w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded-lg text-white text-center'
+                  })
+                )
               ),
               h('div', null,
-                h('span', { className: 'text-gray-400' }, 'Moderator: '),
-                h('span', { className: 'text-white' }, selectedProvider + ':' + selectedModel)
+                h('label', { className: 'block text-gray-400 mb-2' }, 'Moderator model'),
+                h('div', { className: 'flex items-center gap-2' },
+                  h('span', { className: 'text-sm text-gray-400' }, selectedProvider + ':'),
+                  (providers.find(p => p.id === selectedProvider)?.models?.length || 0) > 0
+                    ? h('select', {
+                        value: selectedModel,
+                        onChange: e => setSelectedModel(e.target.value),
+                        className: 'flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-primary'
+                      },
+                        providers
+                          .find(p => p.id === selectedProvider)
+                          ?.models?.map(model =>
+                            h('option', { key: model, value: model }, model)
+                          )
+                      )
+                    : h('input', {
+                        type: 'text',
+                        value: selectedModel,
+                        onChange: e => setSelectedModel(e.target.value),
+                        placeholder: 'Model name',
+                        className: 'flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-primary'
+                      })
+                )
               ),
               h('div', null,
                 h('span', { className: 'text-gray-400 block mb-2' }, 'Agents:'),
@@ -1259,7 +1586,7 @@ function App() {
             step > 1 
               ? h('button', { onClick: () => setStep(step - 1), className: 'text-gray-400 hover:text-white' }, '← Back')
               : h('div'),
-            step < 4 && h('button', {
+            step < 5 && h('button', {
               onClick: () => setStep(step + 1),
               disabled: (step === 1 && !topic) || (step === 2 && !selectedProvider) || (step === 3 && agents.length < 2),
               className: 'px-6 py-2 bg-primary hover:bg-primary/80 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg transition'
@@ -1271,9 +1598,78 @@ function App() {
   }
 
   // Render discussion
+  const statusText = isRunning ? '● Running' : abortReason ? '⚠ Paused' : '✓ Complete';
+  const statusClass = isRunning ? 'text-green-400' : abortReason ? 'text-orange-400' : 'text-blue-400';
+
   return h(Fragment, null,
     h(Header),
     h('main', { className: 'max-w-4xl mx-auto px-6 py-8' },
+      // Abort banner
+      abortReason && h('div', { className: 'mb-6 p-4 rounded-lg bg-orange-900/30 border border-orange-500' },
+        h('div', { className: 'flex items-center gap-2 mb-2' },
+          h('span', { className: 'text-lg' }, '⚠️'),
+          h('span', { className: 'font-bold text-orange-200' }, 'Discussion paused')
+        ),
+        h('div', { className: 'text-sm text-orange-100 mb-2' }, formatAbortReason(abortReason)),
+        abortReason.type === 'needs_human' && h('div', { className: 'mt-4' },
+          h('label', { className: 'block text-xs text-orange-200 mb-2' }, 'Provide a human decision to continue'),
+          h('textarea', {
+            value: humanDecisionText,
+            onChange: e => setHumanDecisionText(e.target.value),
+            placeholder: 'Explain how to resolve the critical blockers...',
+            className: 'w-full h-24 px-3 py-2 bg-gray-800 border border-orange-500/50 rounded-lg text-white placeholder-gray-500'
+          }),
+          h('button', {
+            onClick: () => handleContinue({
+              additionalRounds: 1,
+              humanDecision: humanDecisionText,
+              resolveBlockers: 'all'
+            }),
+            disabled: !humanDecisionText.trim() || isContinuing,
+            className: 'mt-3 px-4 py-2 bg-orange-500 hover:bg-orange-400 disabled:bg-gray-600 rounded-lg text-sm font-semibold transition'
+          }, isContinuing ? 'Continuing...' : 'Apply decision & continue')
+        ),
+        abortReason.blockers && abortReason.blockers.length > 0 && h('div', { className: 'mt-3' },
+          h('div', { className: 'text-xs text-orange-200 mb-2' }, 'Critical blockers to review:'),
+          h('div', { className: 'space-y-2' },
+            abortReason.blockers.map((b, i) =>
+              h('div', { key: i, className: 'p-3 bg-orange-900/40 border border-orange-500/40 rounded-lg' },
+                h('div', { className: 'flex items-center gap-2 mb-1' },
+                  h('span', { className: 'text-xs bg-orange-500/30 px-2 py-0.5 rounded' },
+                    'Severity ' + b.severity + '/5'
+                  ),
+                  h('span', { className: 'text-xs bg-gray-600 px-2 py-0.5 rounded' },
+                    'Confidence ' + b.confidence + '/5'
+                  )
+                ),
+                h('div', { className: 'text-sm text-white' }, b.condition),
+                h('div', { className: 'text-xs text-gray-300 mt-1' }, 'Mitigation: ' + b.mitigation)
+              )
+            )
+          )
+        ),
+        h('div', { className: 'mt-4 flex gap-3' },
+          h('button', {
+            onClick: () => { setView('wizard'); setStep(1); setMessages([]); setAbortReason(null); },
+            className: 'px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition text-sm'
+          }, 'Back to Wizard'),
+          h('button', {
+            onClick: () => handleContinue({
+              additionalRounds: 1,
+              overrideLimits: {
+                maxBlockers: Math.max(limits.maxBlockers || 20, 20) + 10,
+                requireHumanDecision: false
+              }
+            }),
+            disabled: isContinuing,
+            className: 'px-4 py-2 bg-primary hover:bg-primary/80 rounded-lg transition text-sm'
+          }, isContinuing ? 'Continuing...' : 'Continue anyway'),
+          sessionId && h('a', {
+            href: '/api/sessions/' + sessionId + '/export',
+            className: 'px-4 py-2 bg-primary hover:bg-primary/80 rounded-lg transition text-sm text-center'
+          }, 'Export Markdown')
+        )
+      ),
       // Status bar
       h('div', { className: 'flex items-center justify-between mb-6 p-4 bg-gray-800 rounded-lg flex-wrap gap-4' },
         h('div', null,
@@ -1298,9 +1694,7 @@ function App() {
         ),
         h('div', null,
           h('div', { className: 'text-sm text-gray-400' }, 'Status'),
-          h('div', { className: 'font-bold ' + (isRunning ? 'text-green-400' : 'text-blue-400') },
-            isRunning ? '● Running' : '✓ Complete'
-          )
+          h('div', { className: 'font-bold ' + statusClass }, statusText)
         )
       ),
       
@@ -1374,7 +1768,7 @@ function App() {
       // Actions
       !isRunning && sessionId && h('div', { className: 'mt-6 flex gap-4' },
         h('button', {
-          onClick: () => { setView('wizard'); setStep(1); setMessages([]); },
+          onClick: () => { setView('wizard'); setStep(1); setMessages([]); setAbortReason(null); },
           className: 'flex-1 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition'
         }, 'New Discussion'),
         h('a', {

@@ -328,6 +328,7 @@ export interface DiscussionLimits {
   maxTokens?: number;            // Maximum total tokens
   maxBlockers?: number;          // Maximum unresolved blockers before abort
   maxConsecutiveDisagreements?: number;  // Max disagreements before arbitration
+  requireHumanDecision?: boolean; // Require human decision when critical blockers occur
 }
 
 export type AbortReason = 

@@ -1,6 +1,16 @@
-# 🤖 Bot Consensus
+# 🏔️ Council of Elrond (Bot Consensus)
+
+<p align="center">
+  <img src="assets/council-of-elrond-banner.jpg" alt="Council of Elrond - LLM Edition" width="800"/>
+  <br/>
+  <em>"Nine companions... so be it. You shall be the Fellowship of the Ring." — But with LLMs!</em>
+</p>
 
 A sophisticated multi-agent AI consensus system where LLM-powered agents with distinct personalities discuss topics, challenge ideas, raise structured objections, and work toward consensus through a carefully designed protocol.
+
+> **"Strangers from distant lands, friends of old. You have been summoned here to answer the threat of Mordor..."**
+> 
+> Like the legendary council that decided the fate of Middle-earth, this tool brings together diverse AI perspectives to deliberate on complex decisions.
 
 ## Table of Contents
 
@@ -65,6 +75,7 @@ A sophisticated multi-agent AI consensus system where LLM-powered agents with di
 - **Decision Gates**: Quality metrics with GO/NO-GO/EXPAND/NEEDS-HUMAN recommendations
 - **Arbiter System**: Automatic tie-breaking for deadlocked discussions
 - **Hard Limits**: Configurable cost, time, and token limits with auto-abort
+- **Human Decision Gate (Optional)**: Pause on critical blockers and continue with a human decision
 - **Consensus Metrics**: Agreement level tracking and convergence detection
 
 ### Integration
@@ -75,17 +86,26 @@ A sophisticated multi-agent AI consensus system where LLM-powered agents with di
 
 ## Installation
 
-### Prerequisites
+### Quick Install (npm)
 
+```bash
+# Install globally
+npm install -g council-of-elrond
+
+# Or run directly with npx (no install needed)
+npx council-of-elrond --wizard
+```
+
+### From Source
+
+**Prerequisites:**
 - [Bun](https://bun.sh/) runtime (v1.0+)
 - At least one LLM provider (local or cloud)
 
-### Setup
-
 ```bash
 # Clone the repository
-git clone <repo-url>
-cd bot-consensus
+git clone https://github.com/talhaorak/council-of-elrond.git
+cd council-of-elrond
 
 # Install dependencies
 bun install
@@ -184,7 +204,8 @@ bun run src/cli.ts run --topic "Your topic" --agent skeptic --agent pragmatist -
 
 Features:
 - Non-interactive execution
-- JSON-compatible output with `--stdout`
+- Machine-readable JSON output with `--json`
+- Human-readable summary output with `--stdout`
 - Full interrupt support via signals
 - Automatic session saving
 
@@ -229,6 +250,8 @@ Features:
 - Blocker and decision gate visualization
 - Provider configuration with API key management
 - Model selection with grouping by provider
+- Limits & safeguards step (cost/time/token/blocker caps)
+- Human decision input when critical blockers require review
 
 ## Keyboard Controls
 
@@ -308,8 +331,9 @@ limits:
   maxCostUsd: 5.00      # Maximum total cost
   maxDurationMs: 600000 # 10 minutes
   maxTokens: 100000     # Maximum total tokens
-  maxBlockers: 5        # Max unresolved blockers before abort
+  maxBlockers: 20       # Max unresolved blockers before abort
   maxConsecutiveDisagreements: 3  # Triggers arbitration
+  requireHumanDecision: false     # Optional: pause on critical blockers
 
 # Agent definitions
 agents:
@@ -363,6 +387,90 @@ Generate a sample config:
 
 ```bash
 bun run src/cli.ts init -o my-config.yaml
+```
+
+## Team Templates
+
+Pre-configured teams for different use cases. Use `--team <name>` to quickly start with a balanced configuration.
+
+### 🏔️ Council of Elrond
+*"Nine companions... so be it."*
+
+Inspired by Tolkien's legendary council. Each LLM embodies a character from the Fellowship:
+
+| Character | Model | Personality | Role |
+|-----------|-------|-------------|------|
+| **Gandalf** | Claude Opus | Analyst | Ancient wisdom, strategic vision |
+| **Elrond** | GPT-5.2 Pro | Mediator | Historical perspective, diplomacy |
+| **Aragorn** | Gemini 3 Pro | Pragmatist | Practical wisdom, humble leadership |
+| **Legolas** | Grok 4.1 | Analyst | Keen perception, swift assessment |
+| **Gimli** | DeepSeek R1 | Skeptic | Dwarven stubbornness, demands proof |
+| **Boromir** | Kimi K2.5 | Devil's Advocate | Argues for expedient solutions |
+| **Frodo** | Claude Sonnet | Mediator | Simple truths, compassion |
+
+```bash
+consensus run --team council-of-elrond --topic "Should we take the Ring to Mordor?"
+```
+
+### 🆓 Free Council
+Zero-cost team using free OpenRouter models. Perfect for testing and learning.
+
+| Agent | Model | Personality |
+|-------|-------|-------------|
+| DeepThinker | deepseek/deepseek-chat:free | Analyst |
+| LlamaWise | meta-llama/llama-3.1-8b:free | Pragmatist |
+| GemmaSkeptic | google/gemma-2-9b-it:free | Skeptic |
+| MistralCreative | mistralai/mistral-7b:free | Innovator |
+
+```bash
+consensus run --team free-council --topic "Your topic here"
+```
+
+### 👑 Pro Council
+Elite team with the most powerful reasoning models. For critical decisions.
+
+| Agent | Model | Personality |
+|-------|-------|-------------|
+| Claude Opus | anthropic/claude-4.5-opus | Analyst |
+| GPT-5.2 Pro | openai/gpt-5.2-pro | Pragmatist |
+| Gemini 3 Pro | google/gemini-3-pro | Innovator |
+| Grok Reasoner | x-ai/grok-4.1 | Devil's Advocate |
+| DeepSeek R1 | deepseek/deepseek-r1 | Skeptic |
+| O3 Planner | openai/o3 | Mediator |
+
+```bash
+consensus run --team pro-council --topic "Critical business decision"
+```
+
+### 🏠 Local Council
+Runs entirely on local hardware (LM Studio / Ollama). Zero API costs, complete privacy.
+
+| Agent | Model | Personality |
+|-------|-------|-------------|
+| Qwen Coder | qwen/qwen3-coder-30b | Analyst |
+| Llama Pragmatist | llama3.3:70b | Pragmatist |
+| DeepSeek Local | deepseek-r1:14b | Skeptic |
+| Mistral Creative | mixtral:8x22b | Innovator |
+
+```bash
+consensus run --team local-council --topic "Private discussion"
+```
+
+### Custom Teams
+
+Create your own team in `templates/teams/my-team.yaml`:
+
+```yaml
+name: My Custom Team
+description: A team optimized for my use case
+agents:
+  - name: Expert One
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    personality:
+      base: analyst
+      systemPromptAddition: |
+        You are an expert in...
 ```
 
 ## Personality System
@@ -551,7 +659,7 @@ Agents can raise structured objections using the BLOCKER format:
 
 Blockers with severity ≥4 and confidence ≥4 are considered **critical** and may trigger:
 - Arbiter intervention
-- NEEDS-HUMAN decision gate
+- NEEDS-HUMAN decision gate (and optional pause when `requireHumanDecision` is enabled)
 - Auto-abort (if maxBlockers exceeded)
 
 ### Structured State
@@ -609,8 +717,9 @@ limits:
   maxCostUsd: 5.00           # Stop if cost exceeds $5
   maxDurationMs: 600000      # Stop after 10 minutes
   maxTokens: 100000          # Stop after 100k tokens
-  maxBlockers: 5             # Stop if 5+ blockers unresolved
+  maxBlockers: 20            # Stop if 20+ blockers unresolved
   maxConsecutiveDisagreements: 3  # Trigger arbitration
+  requireHumanDecision: false     # Optional: pause on critical blockers
 ```
 
 When a limit is hit:
@@ -618,6 +727,9 @@ When a limit is hit:
 2. Current state is saved
 3. Session can be resumed later
 4. Output includes abort reason
+
+If `requireHumanDecision: true` and critical blockers are raised, the session pauses
+with a `needs_human` abort reason. Provide a human decision (CLI or Web UI) to continue.
 
 ### Decision Gates
 
@@ -789,6 +901,15 @@ const result = await runConsensusJSON({
 //   participantCount: 2,
 //   roundCount: 2
 // }
+```
+
+### Headless CLI (for AI agents)
+
+```bash
+# Machine-readable JSON output
+bun run src/cli.ts run --json \
+  --topic "Should we use event sourcing?" \
+  --agent skeptic --agent pragmatist
 ```
 
 ### External Interrupt Control
@@ -981,7 +1102,12 @@ consensus session <id>       # Show details of a saved session
 --max-cost <usd>                 Maximum cost in USD (default: 5.0)
 --max-time <minutes>             Maximum duration in minutes (default: 10)
 --max-tokens <count>             Maximum total tokens
---max-blockers <count>           Maximum unresolved blockers (default: 5)
+--max-blockers <count>           Maximum unresolved blockers (default: 20)
+--require-human                  Pause when critical blockers require human decision
+--human-decision <text>          Provide decision text to resolve blockers
+
+# Headless / AI tooling
+--json                           Print machine-readable JSON to stdout
 
 # Debug
 --debug                          Enable debug logging to file
@@ -1075,30 +1201,33 @@ Session metadata for continuation and indexing.
 ### 2. Executive Summary
 Final consensus statement from the moderator.
 
-### 3. Participants Table
+### 3. Abort Reason (if any)
+Why the discussion paused or stopped (limits or human-decision gate).
+
+### 4. Participants Table
 | Agent | Personality | Key Contributions |
 |-------|-------------|-------------------|
 
-### 4. Key Agreements
+### 5. Key Agreements
 Points all agents agreed on, extracted from discussion.
 
-### 5. Areas of Disagreement
+### 6. Areas of Disagreement
 Unresolved differences requiring attention.
 
-### 6. Blockers & Concerns
+### 7. Blockers & Concerns
 Open and resolved blockers with severity, impact, and mitigations.
 
-### 7. Discussion Metrics
+### 8. Discussion Metrics
 - Agreement Level
 - Blockers Raised/Resolved
 - Convergence Round
 
-### 8. Cost Summary
+### 9. Cost Summary
 - Total Cost
 - Total Tokens (input/output)
 - Cost by Agent table
 
-### 9. Full Transcript
+### 10. Full Transcript
 Complete discussion in collapsible section with all messages, stances, key points, and blockers.
 
 ## Troubleshooting
@@ -1136,6 +1265,11 @@ Logs are written to `.consensus/logs/consensus-YYYY-MM-DD.log`.
 - Verify session ID with `bun run src/cli.ts sessions`
 - Check `.consensus/current-state.json` exists
 - Try `--wizard` which auto-detects incomplete sessions
+
+**Discussion pauses unexpectedly**
+- If `requireHumanDecision` is enabled, critical blockers will pause the run
+- Provide a decision in the Web UI or use CLI `--human-decision`
+- Increase `maxBlockers` or disable `requireHumanDecision` for uninterrupted runs
 
 **Provider not available**
 - Run `bun run src/cli.ts providers` to check status

@@ -5,9 +5,7 @@ import type {
   AgentMessage,
   ModeratorMessage,
   SessionState,
-  Blocker,
-  CostSummary,
-  ConsensusMetrics,
+  AbortReason,
 } from '../core/types.js';
 import { CostTracker } from '../core/cost-tracker.js';
 
@@ -39,6 +37,13 @@ export function generateMarkdown(output: ConsensusOutput): string {
   lines.push('');
   lines.push(summary.finalConsensus);
   lines.push('');
+  
+  if (session.abortReason) {
+    lines.push('## Abort Reason');
+    lines.push('');
+    lines.push(formatAbortReason(session.abortReason));
+    lines.push('');
+  }
 
   // Participants
   lines.push('## Participants');
@@ -120,6 +125,7 @@ export function generateMarkdown(output: ConsensusOutput): string {
 
   // Cost Summary
   if (session.costSummary) {
+    const agentNameById = getAgentNameMap(session);
     lines.push('## Cost Summary');
     lines.push('');
     lines.push(`- **Total Cost:** ${CostTracker.formatCost(session.costSummary.totalCost)}`);
@@ -136,8 +142,8 @@ export function generateMarkdown(output: ConsensusOutput): string {
       lines.push('| Agent | Cost |');
       lines.push('|-------|------|');
       for (const [agentId, cost] of Object.entries(session.costSummary.costByAgent)) {
-        const agent = summary.agentSummaries.find(a => a.agentName.includes(agentId.slice(0, 8)));
-        const name = agent?.agentName || agentId.slice(0, 8);
+        const fallback = summary.agentSummaries.find(a => a.agentName.includes(agentId.slice(0, 4)));
+        const name = agentNameById.get(agentId) || fallback?.agentName || agentId.slice(0, 8);
         lines.push(`| ${name} | ${CostTracker.formatCost(cost)} |`);
       }
       lines.push('');
@@ -228,6 +234,9 @@ export function generateCompactSummary(output: ConsensusOutput): string {
   
   lines.push(`Participants: ${summary.participantCount} | Rounds: ${summary.roundCount}`);
   lines.push(`Consensus Reached: ${summary.consensusReached ? 'Yes ✓' : 'Partial'}`);
+  if (session.abortReason) {
+    lines.push(`Abort Reason: ${formatAbortReason(session.abortReason)}`);
+  }
   
   // Add metrics and cost
   if (session.metrics) {
@@ -319,6 +328,41 @@ function isModeratorMessage(msg: Message): msg is ModeratorMessage {
 // Helper to escape YAML strings
 function escapeYaml(str: string): string {
   return str.replace(/"/g, '\\"').replace(/\n/g, ' ');
+}
+
+function formatAbortReason(reason: AbortReason): string {
+  switch (reason.type) {
+    case 'cost_limit':
+      return `Cost limit exceeded ($${reason.spent.toFixed(2)} > $${reason.limit.toFixed(2)}).`;
+    case 'time_limit':
+      return `Time limit exceeded (${Math.round(reason.elapsed / 1000)}s > ${Math.round(reason.limit / 1000)}s).`;
+    case 'token_limit':
+      return `Token limit exceeded (${reason.used} > ${reason.limit}).`;
+    case 'blocker_limit':
+      return `Blocker limit exceeded (${reason.count} >= ${reason.limit}).`;
+    case 'deadlock':
+      return `Deadlock detected: ${reason.description}.`;
+    case 'needs_human':
+      return `Human decision required for ${reason.blockers.length} critical blocker(s).`;
+    case 'user_interrupt':
+      return `User interrupt (${reason.interruptType}).`;
+    default:
+      return 'Discussion aborted due to limits.';
+  }
+}
+
+function getAgentNameMap(session: SessionState): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const agent of session.config.agents) {
+    map.set(agent.id, agent.name);
+  }
+  for (const message of session.messages) {
+    if (isAgentMessage(message)) {
+      map.set(message.agentId, message.agentName);
+    }
+  }
+  map.set('moderator', 'Moderator');
+  return map;
 }
 
 /**

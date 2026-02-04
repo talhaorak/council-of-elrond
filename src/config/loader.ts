@@ -12,6 +12,7 @@ import { DiscussionConfigSchema } from '../core/types.js';
 import { loadPersonality, extendPersonality } from '../agents/personalities/index.js';
 import { getDefaultProvider, getDefaultModel } from '../providers/index.js';
 import { nanoid } from 'nanoid';
+import type { LoadedTeam } from './teams.js';
 
 /**
  * Configuration file schema (more flexible than runtime config)
@@ -102,11 +103,58 @@ export async function buildConfig(options: {
   moderatorModel?: string;
   outputPath?: string;
   outputStdout?: boolean;
+  teamTemplate?: LoadedTeam | null;
 }): Promise<DiscussionConfig> {
   // Load file config if provided
   let fileConfig: ConfigFile = { depth: 3 };
   if (options.configFile) {
     fileConfig = await loadConfigFile(options.configFile);
+  }
+
+  // If team template is provided, use it as base configuration
+  if (options.teamTemplate) {
+    const team = options.teamTemplate;
+    
+    // Convert team template agents to file config format
+    fileConfig.agents = team.agents.map((agent: any) => {
+      const p = agent.personality;
+      const isStringPersonality = typeof p === 'string';
+      return {
+        name: agent.name,
+        provider: agent.provider,
+        model: agent.model,
+        personality: isStringPersonality ? p : {
+          base: p.base,
+          name: p.name,
+          traits: p.traits,
+          systemPromptAddition: p.systemPromptAddition,
+          communicationStyle: p.communicationStyle ? {
+            tone: p.communicationStyle.tone,
+            verbosity: p.communicationStyle.verbosity as 'concise' | 'moderate' | 'detailed' | undefined,
+            formality: p.communicationStyle.formality as 'casual' | 'balanced' | 'formal' | undefined,
+          } : undefined,
+        },
+      };
+    });
+
+    // Set moderator from template
+    if (team.moderator) {
+      fileConfig.moderator = {
+        provider: team.moderator.provider,
+        model: team.moderator.model,
+        temperature: team.moderator.temperature,
+      };
+    }
+
+    // Use recommended depth if not specified
+    if (!options.depth && team.recommended_depth) {
+      fileConfig.depth = team.recommended_depth;
+    }
+
+    // Use team limits if available
+    if (team.limits) {
+      // Will be applied later in the config
+    }
   }
 
   // Determine defaults

@@ -20,7 +20,7 @@ import { AgentFactory, type AgentDefinition } from '../agents/factory.js';
 import { type InterruptController, createInterruptController } from './interrupts.js';
 import { logger } from './logger.js';
 import { WorkspaceManager, type CurrentState } from './workspace.js';
-import { CostTracker, estimateCost } from './cost-tracker.js';
+import { CostTracker } from './cost-tracker.js';
 import { StructuredStateManager } from './structured-state.js';
 import { Arbiter } from './arbiter.js';
 import { checkLimits, calculateDecisionGate, DEFAULT_LIMITS } from './limits.js';
@@ -45,6 +45,8 @@ export class ConsensusEngine {
   private workspace?: WorkspaceManager;
   private autoSaveCallback?: AutoSaveCallback;
   private currentAgentIndex: number = 0;
+  private abortRequested: boolean = false;
+  private resumeInfo?: { skipOpening: boolean; startDiscussionRound: number };
   
   // New feature instances
   private costTracker: CostTracker;
@@ -360,6 +362,19 @@ export class ConsensusEngine {
   }
 
   /**
+   * Record cost for moderator messages
+   */
+  private async recordModeratorCost(): Promise<void> {
+    await this.recordCost(
+      'moderator',
+      'Moderator',
+      this.config.moderator.provider,
+      this.config.moderator.model,
+      undefined
+    );
+  }
+
+  /**
    * Process blockers from an agent message
    */
   private async processBlockers(message: AgentMessage): Promise<void> {
@@ -384,6 +399,31 @@ export class ConsensusEngine {
   }
 
   /**
+   * Finalize agent message side effects (costs, blockers, structured state, autosave)
+   */
+  private async finalizeAgentMessage(
+    agent: Agent,
+    message: AgentMessage,
+    options?: { trackDisagreements?: boolean }
+  ): Promise<void> {
+    await this.recordCost(agent.id, agent.name, agent.config.provider, agent.config.model, message.tokenUsage);
+    await this.processBlockers(message);
+    if (options?.trackDisagreements) {
+      this.trackDisagreements(message);
+    }
+    this.structuredState.processAgentMessage(message);
+    await this.autoSave();
+  }
+
+  /**
+   * Finalize moderator message side effects (costs, autosave)
+   */
+  private async finalizeModeratorMessage(message: ModeratorMessage): Promise<void> {
+    await this.recordModeratorCost();
+    await this.autoSave();
+  }
+
+  /**
    * Check if limits have been exceeded
    */
   private async checkLimitsAndAbort(): Promise<AbortReason | null> {
@@ -394,11 +434,38 @@ export class ConsensusEngine {
     
     if (abortReason) {
       this.session.abortReason = abortReason;
+      if (abortReason.type !== 'needs_human') {
+        this.abortRequested = true;
+        if (!this.session.finalConsensus) {
+          this.session.finalConsensus = this.formatAbortSummary(abortReason);
+        }
+      }
       await this.emit({ type: 'abort', reason: abortReason });
       logger.warn('Engine', `Abort triggered: ${abortReason.type}`, abortReason);
     }
     
     return abortReason;
+  }
+
+  private formatAbortSummary(reason: AbortReason): string {
+    switch (reason.type) {
+      case 'cost_limit':
+        return `Discussion aborted: cost limit exceeded ($${reason.spent.toFixed(2)} > $${reason.limit.toFixed(2)}).`;
+      case 'time_limit':
+        return `Discussion aborted: time limit exceeded (${Math.round(reason.elapsed / 1000)}s > ${Math.round(reason.limit / 1000)}s).`;
+      case 'token_limit':
+        return `Discussion aborted: token limit exceeded (${reason.used} > ${reason.limit}).`;
+      case 'blocker_limit':
+        return `Discussion aborted: blocker limit exceeded (${reason.count} >= ${reason.limit}).`;
+      case 'deadlock':
+        return `Discussion aborted: deadlock detected (${reason.description}).`;
+      case 'needs_human':
+        return `Discussion paused: human decision required to resolve critical blockers.`;
+      case 'user_interrupt':
+        return `Discussion interrupted by user (${reason.interruptType}).`;
+      default:
+        return 'Discussion aborted due to limit conditions.';
+    }
   }
 
   /**
@@ -498,6 +565,24 @@ export class ConsensusEngine {
     });
   }
 
+  private getResumeInfo(): { skipOpening: boolean; startDiscussionRound: number } {
+    if (this.resumeInfo) return this.resumeInfo;
+
+    const hasOpening = this.session.messages.some((m) => 'phase' in m && m.phase === 'OPENING');
+    const discussionRounds = this.session.messages
+      .filter((m) => 'phase' in m && m.phase === 'DISCUSSION')
+      .map((m) => ('round' in m ? m.round : 0))
+      .filter((round) => round > 0);
+    const lastDiscussionRound = discussionRounds.length > 0 ? Math.max(...discussionRounds) : 0;
+
+    this.resumeInfo = {
+      skipOpening: hasOpening,
+      startDiscussionRound: Math.max(1, lastDiscussionRound + 1),
+    };
+
+    return this.resumeInfo;
+  }
+
   /**
    * Get cost tracker for external access
    */
@@ -518,15 +603,21 @@ export class ConsensusEngine {
   async run(): Promise<ConsensusOutput> {
     await this.initialize();
     this.protocol.start();
+    const resume = this.getResumeInfo();
+    if (resume.skipOpening) {
+      this.protocol.advance();
+    }
 
     // OPENING PHASE
-    if (!this.shouldStop()) {
+    if (!this.shouldStop() && !resume.skipOpening) {
       await this.runOpeningPhase();
+      if (this.abortRequested) return this.generateOutput();
     }
 
     // DISCUSSION PHASE
     if (!this.shouldStop() && !this.shouldWrapUp()) {
-      await this.runDiscussionPhase();
+      await this.runDiscussionPhase(resume.startDiscussionRound);
+      if (this.abortRequested) return this.generateOutput();
     }
 
     // Handle soft interrupt - go directly to consensus
@@ -538,11 +629,13 @@ export class ConsensusEngine {
     // SYNTHESIS PHASE (skip if hard interrupt)
     if (!this.shouldStop()) {
       await this.runSynthesisPhase();
+      if (this.abortRequested) return this.generateOutput();
     }
 
     // CONSENSUS PHASE (always try to run unless hard interrupt)
     if (!this.shouldStop()) {
       await this.runConsensusPhase();
+      if (this.abortRequested) return this.generateOutput();
     }
 
     return this.generateOutput();
@@ -556,15 +649,29 @@ export class ConsensusEngine {
     yield { type: 'session_start', session: this.session };
     
     this.protocol.start();
+    const resume = this.getResumeInfo();
+    if (resume.skipOpening) {
+      this.protocol.advance();
+    }
 
     // OPENING PHASE
-    if (!this.shouldStop()) {
+    if (!this.shouldStop() && !resume.skipOpening) {
       yield* this.runOpeningPhaseStream();
+      if (this.abortRequested) {
+        const output = this.generateOutput();
+        yield { type: 'session_complete', output };
+        return;
+      }
     }
 
     // DISCUSSION PHASE
     if (!this.shouldStop() && !this.shouldWrapUp()) {
-      yield* this.runDiscussionPhaseStream();
+      yield* this.runDiscussionPhaseStream(resume.startDiscussionRound);
+      if (this.abortRequested) {
+        const output = this.generateOutput();
+        yield { type: 'session_complete', output };
+        return;
+      }
     }
 
     // Handle soft interrupt - go directly to wrap up
@@ -585,11 +692,21 @@ export class ConsensusEngine {
     // SYNTHESIS PHASE
     if (!this.shouldStop()) {
       yield* this.runSynthesisPhaseStream();
+      if (this.abortRequested) {
+        const output = this.generateOutput();
+        yield { type: 'session_complete', output };
+        return;
+      }
     }
 
     // CONSENSUS PHASE
     if (!this.shouldStop()) {
       yield* this.runConsensusPhaseStream();
+      if (this.abortRequested) {
+        const output = this.generateOutput();
+        yield { type: 'session_complete', output };
+        return;
+      }
     }
 
     const output = this.generateOutput();
@@ -601,6 +718,7 @@ export class ConsensusEngine {
    */
   private async runOpeningPhase(): Promise<void> {
     this.session.currentPhase = 'OPENING';
+    this.session.currentRound = 1;
     await this.emit({ type: 'phase_change', phase: 'OPENING', round: 1 });
 
     // Moderator introduction
@@ -612,6 +730,9 @@ export class ConsensusEngine {
     );
     this.addMessage(intro);
     await this.emit({ type: 'moderator_message_complete', message: intro });
+    await this.finalizeModeratorMessage(intro);
+    await this.checkLimitsAndAbort();
+    if (this.abortRequested) return;
 
     // Each agent gives initial position
     for (const agent of this.agents) {
@@ -628,8 +749,13 @@ export class ConsensusEngine {
       this.addMessage(message);
       this.protocol.recordAgentMessage();
       await this.emit({ type: 'agent_message_complete', message });
+      await this.finalizeAgentMessage(agent, message);
+      
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return;
     }
 
+    await this.updateMetrics();
     this.protocol.advance();
   }
 
@@ -638,6 +764,7 @@ export class ConsensusEngine {
    */
   private async *runOpeningPhaseStream(): AsyncIterable<ConsensusEvent> {
     this.session.currentPhase = 'OPENING';
+    this.session.currentRound = 1;
     logger.info('Engine', 'Starting OPENING phase');
     yield { type: 'phase_change', phase: 'OPENING', round: 1 };
 
@@ -651,6 +778,9 @@ export class ConsensusEngine {
     );
     this.addMessage(intro);
     yield { type: 'moderator_message_complete', message: intro };
+    await this.finalizeModeratorMessage(intro);
+    await this.checkLimitsAndAbort();
+    if (this.abortRequested) return;
 
     // Each agent gives initial position (streaming)
     for (let i = 0; i < this.agents.length; i++) {
@@ -693,12 +823,11 @@ export class ConsensusEngine {
           logger.agent(agent.name, 'Completed opening statement');
           yield { type: 'agent_message_complete', message: partialMessage };
           
-          // NEW: Track costs, blockers for opening phase
-          await this.recordCost(agent.id, agent.name, agent.config.provider, agent.config.model, partialMessage.tokenUsage);
-          await this.processBlockers(partialMessage);
-          this.structuredState.processAgentMessage(partialMessage);
-          
-          await this.autoSave();
+          await this.finalizeAgentMessage(agent, partialMessage);
+          const abortReason = await this.checkLimitsAndAbort();
+          if (abortReason && abortReason.type !== 'needs_human') {
+            return;
+          }
         }
       }
 
@@ -716,12 +845,12 @@ export class ConsensusEngine {
   /**
    * Discussion phase - multiple rounds of debate
    */
-  private async runDiscussionPhase(): Promise<void> {
+  private async runDiscussionPhase(startRound: number = 1): Promise<void> {
     this.session.currentPhase = 'DISCUSSION';
     
     const discussionRounds = this.config.depth - 1; // Reserve last round for synthesis
     
-    for (let round = 1; round <= discussionRounds; round++) {
+    for (let round = startRound; round <= discussionRounds; round++) {
       // Check for interrupts at start of each round
       if (this.shouldStop() || this.shouldWrapUp()) break;
 
@@ -760,10 +889,20 @@ export class ConsensusEngine {
         this.addMessage(message);
         this.protocol.recordAgentMessage();
         await this.emit({ type: 'agent_message_complete', message });
+        await this.finalizeAgentMessage(agent, message, { trackDisagreements: true });
+        
+        const abortReason = await this.checkLimitsAndAbort();
+        if (abortReason && abortReason.type !== 'needs_human') return;
       }
 
       // Skip summary if interrupted
       if (this.shouldStop() || this.shouldWrapUp()) break;
+
+      // Update metrics and arbitration before summary
+      await this.updateMetrics();
+      if (this.arbiter && Arbiter.needsArbitration(this.structuredState.getState())) {
+        await this.invokeArbiterIfNeeded();
+      }
 
       // Moderator summarizes the round
       await this.emit({ type: 'moderator_speaking' });
@@ -775,7 +914,12 @@ export class ConsensusEngine {
       );
       this.addMessage(summary);
       await this.emit({ type: 'moderator_message_complete', message: summary });
+      await this.finalizeModeratorMessage(summary);
       await this.emit({ type: 'round_complete', round, summary: summary.content });
+      await this.emitDecisionGate();
+      
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return;
 
       this.protocol.advance();
     }
@@ -784,13 +928,13 @@ export class ConsensusEngine {
   /**
    * Discussion phase with streaming
    */
-  private async *runDiscussionPhaseStream(): AsyncIterable<ConsensusEvent> {
+  private async *runDiscussionPhaseStream(startRound: number = 1): AsyncIterable<ConsensusEvent> {
     this.session.currentPhase = 'DISCUSSION';
     logger.info('Engine', 'Starting DISCUSSION phase');
     
     const discussionRounds = this.config.depth - 1;
     
-    for (let round = 1; round <= discussionRounds; round++) {
+    for (let round = startRound; round <= discussionRounds; round++) {
       // Check for interrupts at start of each round
       if (this.shouldStop() || this.shouldWrapUp()) return;
 
@@ -871,13 +1015,7 @@ export class ConsensusEngine {
             logger.info('Engine', `${agent.name} completed response (${totalTime}s)`);
             yield { type: 'agent_message_complete', message: partialMessage };
             
-            // NEW: Track costs, blockers, and disagreements
-            await this.recordCost(agent.id, agent.name, agent.config.provider, agent.config.model, partialMessage.tokenUsage);
-            await this.processBlockers(partialMessage);
-            this.trackDisagreements(partialMessage);
-            this.structuredState.processAgentMessage(partialMessage);
-            
-            await this.autoSave();
+            await this.finalizeAgentMessage(agent, partialMessage, { trackDisagreements: true });
           }
         }
 
@@ -888,7 +1026,7 @@ export class ConsensusEngine {
         // NEW: Check limits after each agent
         const abortReason = await this.checkLimitsAndAbort();
         if (abortReason && abortReason.type !== 'needs_human') {
-          return; // Hard abort
+          return;
         }
       }
 
@@ -939,10 +1077,15 @@ export class ConsensusEngine {
           logger.info('Engine', `Moderator completed summary (${totalTime}s)`);
           yield { type: 'moderator_message_complete', message };
           yield { type: 'round_complete', round, summary: message.content };
-          await this.autoSave();
+          await this.finalizeModeratorMessage(message);
           
           // NEW: Emit decision gate at end of round
           await this.emitDecisionGate();
+          
+          const abortReason = await this.checkLimitsAndAbort();
+          if (abortReason && abortReason.type !== 'needs_human') {
+            return;
+          }
         }
       }
 
@@ -969,6 +1112,9 @@ export class ConsensusEngine {
     );
     this.addMessage(transition);
     await this.emit({ type: 'moderator_message_complete', message: transition });
+    await this.finalizeModeratorMessage(transition);
+    await this.checkLimitsAndAbort();
+    if (this.abortRequested) return;
 
     // Each agent proposes synthesis
     for (const agent of this.agents) {
@@ -985,8 +1131,13 @@ export class ConsensusEngine {
       this.addMessage(message);
       this.protocol.recordAgentMessage();
       await this.emit({ type: 'agent_message_complete', message });
+      await this.finalizeAgentMessage(agent, message);
+      
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return;
     }
 
+    await this.updateMetrics();
     this.protocol.advance();
   }
 
@@ -1009,6 +1160,9 @@ export class ConsensusEngine {
     );
     this.addMessage(transition);
     yield { type: 'moderator_message_complete', message: transition };
+    await this.finalizeModeratorMessage(transition);
+    await this.checkLimitsAndAbort();
+    if (this.abortRequested) return;
 
     // Agents synthesize (streaming)
     for (const agent of this.agents) {
@@ -1028,10 +1182,17 @@ export class ConsensusEngine {
           this.addMessage(partialMessage);
           this.protocol.recordAgentMessage();
           yield { type: 'agent_message_complete', message: partialMessage };
+          await this.finalizeAgentMessage(agent, partialMessage);
+          
+          const abortReason = await this.checkLimitsAndAbort();
+          if (abortReason && abortReason.type !== 'needs_human') {
+            return;
+          }
         }
       }
     }
 
+    await this.updateMetrics();
     this.protocol.advance();
   }
 
@@ -1040,6 +1201,7 @@ export class ConsensusEngine {
    */
   private async runConsensusPhase(): Promise<void> {
     this.session.currentPhase = 'CONSENSUS';
+    this.session.currentRound = this.config.depth;
     await this.emit({ type: 'phase_change', phase: 'CONSENSUS', round: this.config.depth });
 
     // Moderator conclusion
@@ -1051,6 +1213,7 @@ export class ConsensusEngine {
     );
     this.addMessage(conclusion);
     await this.emit({ type: 'moderator_message_complete', message: conclusion });
+    await this.finalizeModeratorMessage(conclusion);
 
     // Analyze consensus
     const consensus = DiscussionProtocol.analyzeConsensus(this.session.messages);
@@ -1066,6 +1229,7 @@ export class ConsensusEngine {
    */
   private async *runConsensusPhaseStream(): AsyncIterable<ConsensusEvent> {
     this.session.currentPhase = 'CONSENSUS';
+    this.session.currentRound = this.config.depth;
     yield { type: 'phase_change', phase: 'CONSENSUS', round: this.config.depth };
 
     // Moderator conclusion
@@ -1077,6 +1241,7 @@ export class ConsensusEngine {
     );
     this.addMessage(conclusion);
     yield { type: 'moderator_message_complete', message: conclusion };
+    await this.finalizeModeratorMessage(conclusion);
 
     const consensus = DiscussionProtocol.analyzeConsensus(this.session.messages);
     this.session.consensusReached = consensus.agreementLevel > 0.6;
@@ -1144,22 +1309,87 @@ export class ConsensusEngine {
    */
   static async resume(
     previousSession: SessionState,
-    additionalRounds: number = 1
+    additionalRounds: number = 1,
+    options?: {
+      humanDecision?: string;
+      resolveBlockers?: 'all' | string[];
+      overrideLimits?: DiscussionConfig['limits'];
+    }
   ): Promise<ConsensusEngine> {
     const newConfig: DiscussionConfig = {
       ...previousSession.config,
       depth: previousSession.config.depth + additionalRounds,
       continueFromSession: previousSession.id,
+      limits: options?.overrideLimits
+        ? { ...previousSession.config.limits, ...options.overrideLimits }
+        : previousSession.config.limits,
     };
 
     const engine = new ConsensusEngine(newConfig);
+    const shouldTrim = previousSession.isComplete || previousSession.currentPhase === 'CONSENSUS';
+    const trimmedMessages = shouldTrim
+      ? previousSession.messages.filter(
+          (message) => message.phase !== 'SYNTHESIS' && message.phase !== 'CONSENSUS'
+        )
+      : previousSession.messages;
+    const lastDiscussionRound = trimmedMessages
+      .filter((message) => message.phase === 'DISCUSSION')
+      .map((message) => message.round)
+      .reduce((max, round) => Math.max(max, round), 0);
+    const hasOpening = trimmedMessages.some((message) => message.phase === 'OPENING');
+    const resumePhase = lastDiscussionRound > 0 ? 'DISCUSSION' : hasOpening ? 'OPENING' : 'OPENING';
+    const resumeRound = lastDiscussionRound > 0 ? lastDiscussionRound : 1;
+
     engine.session = {
       ...previousSession,
       id: nanoid(),
       updatedAt: new Date(),
       config: newConfig,
       isComplete: false,
+      consensusReached: false,
+      finalConsensus: undefined,
+      abortReason: undefined,
+      currentPhase: resumePhase,
+      currentRound: resumeRound,
+      messages: trimmedMessages,
     };
+    
+    // Rehydrate structured state and costs if available
+    if (previousSession.structuredState) {
+      engine.structuredState = StructuredStateManager.fromState(previousSession.structuredState);
+    } else {
+      engine.structuredState = StructuredStateManager.fromMessages(newConfig.topic, previousSession.messages);
+    }
+
+    if (previousSession.costEntries && previousSession.costEntries.length > 0) {
+      engine.costTracker = CostTracker.fromEntries(previousSession.costEntries);
+    }
+
+    if (options?.humanDecision) {
+      const decisionText = options.humanDecision.trim();
+      if (decisionText.length > 0) {
+        const resolutionTargetIds =
+          options.resolveBlockers === 'all' || !options.resolveBlockers
+            ? engine.structuredState.getOpenBlockers().map((b) => b.id)
+            : options.resolveBlockers;
+
+        for (const blockerId of resolutionTargetIds) {
+          engine.structuredState.resolveBlocker(blockerId, decisionText);
+        }
+
+        engine.structuredState.addDecision('Human decision', decisionText, ['human']);
+        engine.session.structuredState = engine.structuredState.getState();
+
+        engine.session.messages.push({
+          id: nanoid(),
+          timestamp: new Date(),
+          phase: engine.session.currentPhase,
+          round: engine.session.currentRound,
+          type: 'summary',
+          content: `Human decision applied:\n${decisionText}`,
+        });
+      }
+    }
 
     return engine;
   }

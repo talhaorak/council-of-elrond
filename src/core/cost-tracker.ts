@@ -99,8 +99,8 @@ export class CostTracker {
   private entries: CostEntry[] = [];
   private startTime: Date;
 
-  constructor() {
-    this.startTime = new Date();
+  constructor(startTime: Date = new Date()) {
+    this.startTime = startTime;
   }
 
   /**
@@ -117,6 +117,22 @@ export class CostTracker {
     });
     
     return fullEntry;
+  }
+
+  /**
+   * Load pre-existing cost entries (e.g., when resuming a session)
+   */
+  loadEntries(entries: CostEntry[]): void {
+    this.entries = entries.map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * Create a tracker from existing entries
+   */
+  static fromEntries(entries: CostEntry[], startTime: Date = new Date()): CostTracker {
+    const tracker = new CostTracker(startTime);
+    tracker.loadEntries(entries);
+    return tracker;
   }
 
   /**

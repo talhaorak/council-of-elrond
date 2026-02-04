@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { buildConfig, generateSampleConfig, loadConfigFile } from './config/loader.js';
@@ -14,6 +14,7 @@ import {
   PROVIDER_NAMES,
   SUGGESTED_TEAMS,
 } from './config/schema.js';
+import { loadTeamTemplates, getTeamById } from './config/teams.js';
 import { writeFile } from 'fs/promises';
 import { WorkspaceManager } from './core/workspace.js';
 import { logger } from './core/logger.js';
@@ -31,6 +32,7 @@ program
   .description('Run a consensus discussion')
   .option('-t, --topic <topic>', 'Discussion topic')
   .option('-c, --config <file>', 'Configuration file (YAML or JSON)')
+  .option('--team <name>', 'Use a pre-configured team template (e.g., council-of-elrond)')
   .option('-d, --depth <number>', 'Discussion depth (rounds)', '3')
   .option('-a, --agent <spec...>', 'Agent spec: provider:model:personality or personality')
   .option('--moderator-provider <provider>', 'Moderator LLM provider')
@@ -48,7 +50,10 @@ program
   .option('--max-cost <usd>', 'Maximum cost in USD before abort', '5.0')
   .option('--max-time <minutes>', 'Maximum duration in minutes', '10')
   .option('--max-tokens <count>', 'Maximum total tokens')
-  .option('--max-blockers <count>', 'Maximum unresolved blockers before abort', '5')
+  .option('--max-blockers <count>', 'Maximum unresolved blockers before abort', '20')
+  .option('--require-human', 'Pause on critical blockers and request human decision')
+  .option('--human-decision <text>', 'Provide a human decision to resolve critical blockers')
+  .option('--json', 'Output machine-readable JSON to stdout')
   .action(async (options) => {
     try {
       // Setup workspace
@@ -176,6 +181,32 @@ program
     console.log(chalk.dim('See: .env.example'));
   });
 
+// List teams
+program
+  .command('teams')
+  .alias('list-teams')
+  .description('List available team templates')
+  .action(async () => {
+    console.log(chalk.bold('\n🎭 Available Team Templates:\n'));
+
+    const teams = await loadTeamTemplates();
+
+    if (teams.length === 0) {
+      console.log(chalk.dim('No team templates found in templates/teams/'));
+      return;
+    }
+
+    for (const team of teams) {
+      const icon = team.icon || '🤖';
+      console.log(`  ${icon} ${chalk.cyan(team.name)} ${chalk.dim(`(${team.id})`)}`);
+      console.log(`     ${chalk.dim(team.description.split('\n')[0])}`);
+      console.log(`     ${chalk.yellow(team.agents.length)} agents\n`);
+    }
+
+    console.log(chalk.dim('Use a team: consensus run --team <id> -t "Your topic"'));
+    console.log(chalk.dim('Example: consensus run --team council-of-elrond -t "Should we use microservices?"\n'));
+  });
+
 // List sessions
 program
   .command('sessions')
@@ -226,6 +257,15 @@ program
  * Run headless discussion
  */
 async function runHeadless(options: any, workspace: WorkspaceManager) {
+  // Load team template if specified
+  let teamTemplate = null;
+  if (options.team) {
+    teamTemplate = await getTeamById(options.team);
+    if (!teamTemplate) {
+      throw new Error(`Team template not found: ${options.team}. Use --list-teams to see available teams.`);
+    }
+  }
+
   // Build config
   const config = await buildConfig({
     configFile: options.config,
@@ -236,6 +276,7 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     moderatorModel: options.moderatorModel,
     outputPath: options.output,
     outputStdout: options.stdout,
+    teamTemplate,
   });
 
   // Add limits from CLI options
@@ -243,11 +284,14 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     maxCostUsd: parseFloat(options.maxCost) || 5.0,
     maxDurationMs: (parseFloat(options.maxTime) || 10) * 60 * 1000,
     maxTokens: options.maxTokens ? parseInt(options.maxTokens) : undefined,
-    maxBlockers: parseInt(options.maxBlockers) || 5,
+    maxBlockers: parseInt(options.maxBlockers) || 20,
+    requireHumanDecision: Boolean(options.requireHuman),
   };
 
-  console.log(chalk.bold(`\n🎯 Topic: ${config.topic}`));
-  console.log(chalk.dim(`   Depth: ${config.depth} rounds | Agents: ${config.agents.length}\n`));
+  if (!options.json) {
+    console.log(chalk.bold(`\n🎯 Topic: ${config.topic}`));
+    console.log(chalk.dim(`   Depth: ${config.depth} rounds | Agents: ${config.agents.length}\n`));
+  }
 
   // Save config to workspace
   await workspace.saveConfig({
@@ -269,41 +313,77 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
   const engine = new ConsensusEngine(config, undefined, workspace);
   const sessionManager = new SessionManager();
 
-  // Progress logging
-  engine.on((event) => {
-    switch (event.type) {
-      case 'phase_change':
-        console.log(chalk.blue(`\n── ${event.phase} (Round ${event.round}) ──\n`));
-        break;
-      case 'agent_speaking':
-        process.stdout.write(chalk.cyan(`${event.agentName}: `));
-        break;
-      case 'agent_message_complete':
-        console.log(chalk.dim(`[${event.message.stance}]`));
-        break;
-      case 'agent_skipped':
-        console.log(chalk.yellow(`${event.agentName}: [SKIPPED]`));
-        break;
-      case 'moderator_speaking':
-        process.stdout.write(chalk.yellow('Moderator: '));
-        break;
-      case 'moderator_message_complete':
-        console.log(chalk.dim(`[${event.message.type}]`));
-        break;
-      case 'round_complete':
-        console.log(chalk.dim(`\n── Round ${event.round} complete ──`));
-        break;
-    }
-  });
+  // Progress logging (disabled in JSON mode)
+  if (!options.json) {
+    engine.on((event) => {
+      switch (event.type) {
+        case 'phase_change':
+          console.log(chalk.blue(`\n── ${event.phase} (Round ${event.round}) ──\n`));
+          break;
+        case 'agent_speaking':
+          process.stdout.write(chalk.cyan(`${event.agentName}: `));
+          break;
+        case 'agent_message_complete':
+          console.log(chalk.dim(`[${event.message.stance}]`));
+          break;
+        case 'agent_skipped':
+          console.log(chalk.yellow(`${event.agentName}: [SKIPPED]`));
+          break;
+        case 'moderator_speaking':
+          process.stdout.write(chalk.yellow('Moderator: '));
+          break;
+        case 'moderator_message_complete':
+          console.log(chalk.dim(`[${event.message.type}]`));
+          break;
+        case 'round_complete':
+          console.log(chalk.dim(`\n── Round ${event.round} complete ──`));
+          break;
+      }
+    });
+  }
 
   // Run discussion
-  const output = await engine.run();
+  let output = await engine.run();
+  let activeEngine = engine;
+
+  if (output.session.abortReason?.type === 'needs_human') {
+    const decision = await getHumanDecision(options);
+    if (decision) {
+      const resumed = await ConsensusEngine.resume(activeEngine.getSession(), 1, {
+        humanDecision: decision,
+        resolveBlockers: 'all',
+      });
+      output = await resumed.run();
+      activeEngine = resumed;
+    }
+  }
 
   // Save session and mark complete
-  await sessionManager.save(engine.getSession());
-  await workspace.markCompleted(engine.getSession().id);
+  await sessionManager.save(activeEngine.getSession());
+  await workspace.markCompleted(activeEngine.getSession().id);
 
   // Generate output
+  if (options.json) {
+    const jsonResult = {
+      success: output.session.abortReason ? false : true,
+      sessionId: activeEngine.getSession().id,
+      topic: output.summary.topic,
+      consensusReached: output.summary.consensusReached,
+      consensus: output.summary.finalConsensus,
+      keyAgreements: output.summary.keyAgreements,
+      disagreements: output.summary.remainingDisagreements,
+      participantCount: output.summary.participantCount,
+      roundCount: output.summary.roundCount,
+      interrupted: false,
+      abortReason: output.session.abortReason ?? null,
+    };
+    console.log(JSON.stringify(jsonResult, null, 2));
+    if (config.outputPath) {
+      await writeMarkdownFile(output, config.outputPath);
+    }
+    return;
+  }
+
   if (config.outputToStdout) {
     console.log('\n' + generateCompactSummary(output));
   }
@@ -318,7 +398,7 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     console.log(chalk.green(`\n✓ Output saved to ${filename}`));
   }
 
-  console.log(chalk.dim(`Session ID: ${engine.getSession().id}`));
+  console.log(chalk.dim(`Session ID: ${activeEngine.getSession().id}`));
 }
 
 /**
@@ -332,47 +412,113 @@ async function continueSession(sessionId: string, options: any, workspace: Works
     throw new Error(`Session not found: ${sessionId}`);
   }
 
-  console.log(chalk.bold(`\n📝 Continuing session: ${sessionId}`));
-  console.log(chalk.dim(`   Topic: ${session.config.topic}`));
-  console.log(chalk.dim(`   Previous rounds: ${session.currentRound}\n`));
+  if (!options.json) {
+    console.log(chalk.bold(`\n📝 Continuing session: ${sessionId}`));
+    console.log(chalk.dim(`   Topic: ${session.config.topic}`));
+    console.log(chalk.dim(`   Previous rounds: ${session.currentRound}\n`));
+  }
 
   const additionalRounds = parseInt(options.depth) || 2;
-  const engine = await ConsensusEngine.resume(session, additionalRounds);
-
-  // Same progress logging as headless
-  engine.on((event) => {
-    switch (event.type) {
-      case 'phase_change':
-        console.log(chalk.blue(`\n── ${event.phase} (Round ${event.round}) ──\n`));
-        break;
-      case 'agent_speaking':
-        process.stdout.write(chalk.cyan(`${event.agentName}: `));
-        break;
-      case 'agent_message_complete':
-        console.log(chalk.dim(`[${event.message.stance}]`));
-        break;
-      case 'agent_skipped':
-        console.log(chalk.yellow(`${event.agentName}: [SKIPPED]`));
-        break;
-      case 'moderator_speaking':
-        process.stdout.write(chalk.yellow('Moderator: '));
-        break;
-      case 'moderator_message_complete':
-        console.log(chalk.dim(`[${event.message.type}]`));
-        break;
-    }
+  const engine = await ConsensusEngine.resume(session, additionalRounds, {
+    humanDecision: options.humanDecision,
+    resolveBlockers: options.humanDecision ? 'all' : undefined,
   });
 
-  const output = await engine.run();
+  // Same progress logging as headless (disabled in JSON mode)
+  if (!options.json) {
+    engine.on((event) => {
+      switch (event.type) {
+        case 'phase_change':
+          console.log(chalk.blue(`\n── ${event.phase} (Round ${event.round}) ──\n`));
+          break;
+        case 'agent_speaking':
+          process.stdout.write(chalk.cyan(`${event.agentName}: `));
+          break;
+        case 'agent_message_complete':
+          console.log(chalk.dim(`[${event.message.stance}]`));
+          break;
+        case 'agent_skipped':
+          console.log(chalk.yellow(`${event.agentName}: [SKIPPED]`));
+          break;
+        case 'moderator_speaking':
+          process.stdout.write(chalk.yellow('Moderator: '));
+          break;
+        case 'moderator_message_complete':
+          console.log(chalk.dim(`[${event.message.type}]`));
+          break;
+      }
+    });
+  }
+
+  let output = await engine.run();
+  let activeEngine = engine;
+
+  if (output.session.abortReason?.type === 'needs_human') {
+    const decision = await getHumanDecision(options);
+    if (decision) {
+      const resumed = await ConsensusEngine.resume(activeEngine.getSession(), 1, {
+        humanDecision: decision,
+        resolveBlockers: 'all',
+      });
+      output = await resumed.run();
+      activeEngine = resumed;
+    }
+  }
 
   // Save updated session
-  await manager.save(engine.getSession());
-  await workspace.markCompleted(engine.getSession().id);
+  await manager.save(activeEngine.getSession());
+  await workspace.markCompleted(activeEngine.getSession().id);
 
   // Output
-  const filename = options.output || generateFilename(session.config.topic, engine.getSession().id);
+  if (options.json) {
+    const jsonResult = {
+      success: output.session.abortReason ? false : true,
+      sessionId: activeEngine.getSession().id,
+      topic: output.summary.topic,
+      consensusReached: output.summary.consensusReached,
+      consensus: output.summary.finalConsensus,
+      keyAgreements: output.summary.keyAgreements,
+      disagreements: output.summary.remainingDisagreements,
+      participantCount: output.summary.participantCount,
+      roundCount: output.summary.roundCount,
+      interrupted: false,
+      abortReason: output.session.abortReason ?? null,
+    };
+    console.log(JSON.stringify(jsonResult, null, 2));
+    if (options.output) {
+      await writeMarkdownFile(output, options.output);
+    }
+    return;
+  }
+
+  const filename = options.output || generateFilename(session.config.topic, activeEngine.getSession().id);
   await writeMarkdownFile(output, filename);
   console.log(chalk.green(`\n✓ Output saved to ${filename}`));
+}
+
+async function getHumanDecision(options: any): Promise<string | null> {
+  if (options.humanDecision) {
+    return String(options.humanDecision);
+  }
+
+  if (!process.stdin.isTTY) {
+    return null;
+  }
+
+  const { createInterface } = await import('readline');
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const answer = await new Promise<string>((resolve) => {
+    rl.question('\nHuman decision required. Provide resolution text (or press Enter to skip):\n> ', (response) => {
+      resolve(response.trim());
+    });
+  });
+
+  rl.close();
+  return answer.length > 0 ? answer : null;
 }
 
 // Parse and run
