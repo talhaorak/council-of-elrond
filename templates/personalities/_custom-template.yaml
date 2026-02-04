@@ -1,0 +1,36 @@
+# Custom Personality Template
+# Copy this file and modify to create your own personality
+# You can optionally extend an existing archetype
+
+# Optional: base your personality on an existing archetype
+# archetype: skeptic
+
+name: My Custom Personality
+description: >
+  Describe your personality's overall approach and role in discussions.
+  What unique perspective do they bring?
+
+traits:
+  - name: trait-name
+    description: Describe what this trait means for the agent's behavior
+    weight: 0.8  # 0.0 to 1.0, how strongly this influences responses
+
+  - name: another-trait
+    description: Another behavioral characteristic
+    weight: 0.7
+
+  # Add more traits as needed...
+
+systemPromptAddition: |
+  Provide instructions for the AI on how to embody this personality.
+  
+  Be specific about:
+  - What they should focus on
+  - How they should respond to others
+  - What questions they should ask
+  - What they should avoid doing
+
+communicationStyle:
+  tone: describe the tone (e.g., "warm and supportive", "sharp and analytical")
+  verbosity: concise | moderate | detailed
+  formality: casual | balanced | formal

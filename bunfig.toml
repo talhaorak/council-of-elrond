@@ -1,0 +1,11 @@
+[install]
+# Use exact versions for reproducibility
+exact = true
+
+[run]
+# Enable source maps for better error traces
+sourcemap = "external"
+
+[test]
+# Test configuration
+coverage = true

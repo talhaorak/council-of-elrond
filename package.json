@@ -1,0 +1,46 @@
+{
+  "name": "bot-consensus",
+  "version": "1.0.0",
+  "description": "Multi-agent AI consensus system with TUI and Web interfaces",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "consensus": "./src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "dev:web": "bun run src/ui/web/server.ts",
+    "dev:tui": "bun run src/cli.ts --tui",
+    "build": "bun build src/cli.ts --outdir dist --target node",
+    "build:web": "cd web && bun run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.26.0",
+    "@google/generative-ai": "^0.12.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "hono": "^4.4.0",
+    "ink": "^5.0.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "inquirer": "^9.2.23",
+    "nanoid": "^5.0.7",
+    "ollama": "^0.5.6",
+    "openai": "^4.52.0",
+    "react": "^18.3.1",
+    "yaml": "^2.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.6",
+    "@types/inquirer": "^9.0.7",
+    "@types/react": "^18.3.3",
+    "typescript": "^5.5.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
