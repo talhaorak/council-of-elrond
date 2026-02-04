@@ -20,9 +20,9 @@ import { logger } from './logger.js';
  * Default limits if none specified
  */
 export const DEFAULT_LIMITS: DiscussionLimits = {
-  maxCostUsd: 5.0,                    // $5 max per discussion
-  maxDurationMs: 10 * 60 * 1000,      // 10 minutes max
-  maxTokens: 100000,                   // 100k tokens max
+  maxCostUsd: 15.0,                    // $15 max per discussion
+  maxDurationMs: 45 * 60 * 1000,       // 45 minutes max (7 agents × 3 rounds need time)
+  maxTokens: 500000,                   // 500k tokens (7 verbose agents)
   maxBlockers: 20,                     // 20 unresolved blockers triggers abort
   maxConsecutiveDisagreements: 3,      // 3 consecutive disagreements triggers arbitration
   requireHumanDecision: false,

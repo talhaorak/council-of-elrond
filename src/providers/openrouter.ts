@@ -96,35 +96,58 @@ export class OpenRouterProvider extends BaseProvider {
 
     const model = this.defaultModel;
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.openRouterApiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': this.siteUrl,
-        'X-Title': this.siteName,
-      },
-      body: JSON.stringify({
-        model,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        max_tokens: options?.maxTokens || 4096,
-        temperature: options?.temperature ?? 0.7,
-      }),
-    });
+    const maxRetries = 2;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.openRouterApiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': this.siteUrl,
+          'X-Title': this.siteName,
+        },
+        body: JSON.stringify({
+          model,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          max_tokens: options?.maxTokens || 4096,
+          temperature: options?.temperature ?? 0.7,
+        }),
+        signal: AbortSignal.timeout(120_000), // 120s per-request timeout
+      });
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderAPIError('OpenRouter', `${response.status} - ${error}`, response.status);
+      if (!response.ok) {
+        const error = await response.text();
+        // Retry on 5xx or 429
+        if (attempt < maxRetries && (response.status >= 500 || response.status === 429)) {
+          const wait = (attempt + 1) * 5000;
+          console.error(`[OpenRouter] ${model} returned ${response.status}, retrying in ${wait/1000}s (attempt ${attempt + 1}/${maxRetries})...`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw new ProviderAPIError('OpenRouter', `${response.status} - ${error}`, response.status);
+      }
+
+      const data = await response.json() as {
+        choices: { message: { content: string } }[];
+      };
+
+      const content = data.choices[0]?.message?.content || '';
+      
+      // Retry on empty response
+      if (!content.trim() && attempt < maxRetries) {
+        console.error(`[OpenRouter] ${model} returned empty response, retrying (attempt ${attempt + 1}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+
+      return content;
     }
 
-    const data = await response.json() as {
-      choices: { message: { content: string } }[];
-    };
-
-    return data.choices[0]?.message?.content || '';
+    // Should not reach here, but safety fallback
+    return '';
   }
 
   async *chatStream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<StreamChunk> {
@@ -152,6 +175,7 @@ export class OpenRouterProvider extends BaseProvider {
         temperature: options?.temperature ?? 0.7,
         stream: true,
       }),
+      signal: AbortSignal.timeout(180_000), // 180s for streaming
     });
 
     if (!response.ok) {
