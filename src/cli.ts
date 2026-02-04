@@ -71,7 +71,7 @@ program
       const hasConfig = await workspace.hasConfig();
       const hasIncomplete = await workspace.hasIncompleteSession();
 
-      if (hasIncomplete && !options.wizard && !options.web && !options.tui && !options.force) {
+      if (hasIncomplete && !options.wizard && !options.web && !options.tui && !options.force && !options.continue) {
         const state = await workspace.loadCurrentState();
         if (state) {
           console.log(chalk.yellow('\n⚠ Incomplete session detected:'));
