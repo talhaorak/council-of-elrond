@@ -17,7 +17,7 @@ agents:
   - name: The Optimist
     description: Sees opportunities and positive outcomes
     provider: openrouter
-    model: anthropic/claude-sonnet-4.5
+    model: moonshotai/kimi-k2.5
     personality:
       base: optimist
       name: Hopeful Analyst
@@ -112,7 +112,7 @@ agents:
   - name: The Mediator
     description: Bridges differences and finds common ground
     provider: openrouter
-    model: anthropic/claude-sonnet-4.5
+    model: anthropic/claude-opus-4.5
     personality:
       base: mediator
       name: Consensus Builder
