@@ -1,5 +1,5 @@
 ---
-name: bot-consensus
+name: council-of-elrond
 description: Run multi-agent AI consensus discussions to analyze topics from multiple perspectives. Use when you need balanced analysis, want to explore different viewpoints on a decision, or need to reach a well-reasoned conclusion on complex topics. Agents with distinct personalities (skeptic, optimist, pragmatist, innovator, etc.) discuss and debate to produce actionable consensus.
 license: MIT
 compatibility: Requires Bun runtime and at least one LLM provider (LM Studio local by default, or OpenAI/Anthropic/Google API keys)
