@@ -21,7 +21,7 @@ agents:
       Maia wizard, bearer of Narya. Sees the big picture across ages.
       "A wizard is never late, nor is he early. He arrives precisely when he means to."
     provider: openrouter
-    model: anthropic/claude-4.5-opus
+    model: anthropic/claude-opus-4.5
     personality:
       base: analyst
       name: Gandalf
@@ -81,7 +81,7 @@ agents:
       Heir of Isildur, Ranger of the North. Knows both wilderness and courts.
       Practical leader who has walked among all peoples.
     provider: openrouter
-    model: google/gemini-3-pro
+    model: google/gemini-2.5-pro
     personality:
       base: pragmatist
       name: Aragorn
@@ -111,7 +111,7 @@ agents:
       Prince of the Woodland Realm, keen-eyed archer.
       Perceives what others miss, swift in thought and deed.
     provider: openrouter
-    model: x-ai/grok-4.1
+    model: x-ai/grok-4
     personality:
       base: analyst
       name: Legolas
@@ -201,7 +201,7 @@ agents:
       Ring-bearer, humble hobbit with unexpected courage.
       Reminds the council of the small things that matter.
     provider: openrouter
-    model: anthropic/claude-4.5-sonnet
+    model: anthropic/claude-sonnet-4.5
     personality:
       base: mediator
       name: Frodo
@@ -291,7 +291,7 @@ agents:
       Youngest of the Fellowship, curious and growing.
       Naive questions sometimes reveal profound truths.
     provider: openrouter
-    model: meta-llama/llama-3.3-70b
+    model: meta-llama/llama-3.3-70b-instruct
     personality:
       base: innovator
       name: Pippin
@@ -328,7 +328,7 @@ moderator:
 
 arbiter:
   provider: openrouter
-  model: anthropic/claude-4.5-opus
+  model: anthropic/claude-opus-4.5
   # When the council deadlocks, the wisest voice breaks the tie
 
 limits:

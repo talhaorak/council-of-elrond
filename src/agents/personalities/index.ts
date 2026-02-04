@@ -99,6 +99,7 @@ export function createPersonality(config: {
 
 /**
  * Merge a base archetype with custom overrides
+ * Only overrides properties that are actually defined (not undefined)
  */
 export async function extendPersonality(
   baseArchetype: PersonalityArchetype,
@@ -106,15 +107,27 @@ export async function extendPersonality(
 ): Promise<Personality> {
   const base = await loadPersonality(baseArchetype);
   
+  // Filter out undefined values from overrides to prevent overwriting base values
+  const definedOverrides: Partial<Personality> = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) {
+      (definedOverrides as any)[key] = value;
+    }
+  }
+  
   return {
     ...base,
-    ...overrides,
+    ...definedOverrides,
     archetype: baseArchetype,
-    traits: overrides.traits ? [...base.traits, ...overrides.traits] : base.traits,
-    communicationStyle: {
-      ...base.communicationStyle,
-      ...overrides.communicationStyle,
-    },
+    // Merge traits if overrides has traits
+    traits: overrides.traits && overrides.traits.length > 0 
+      ? [...base.traits, ...overrides.traits] 
+      : base.traits,
+    // Merge communication style if overrides has it
+    communicationStyle: overrides.communicationStyle 
+      ? { ...base.communicationStyle, ...overrides.communicationStyle }
+      : base.communicationStyle,
+    // Append system prompt addition if provided
     systemPromptAddition: overrides.systemPromptAddition
       ? `${base.systemPromptAddition}\n\nAdditional instructions:\n${overrides.systemPromptAddition}`
       : base.systemPromptAddition,

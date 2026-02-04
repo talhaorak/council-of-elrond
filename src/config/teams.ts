@@ -161,11 +161,25 @@ export function teamToConfig(team: TeamTemplate): {
   depth: number;
 } {
   const agents = team.agents.map((agent, index) => {
+    // Build personality description from agent description or traits
+    const buildDescription = (): string => {
+      if (agent.description) return agent.description.trim().split('\n')[0];
+      if (typeof agent.personality !== 'string' && agent.personality.traits?.length) {
+        return agent.personality.traits.map(t => t.name).join(', ');
+      }
+      return agent.name;
+    };
+
     const personality: Partial<Personality> = typeof agent.personality === 'string'
-      ? { archetype: agent.personality as PersonalityArchetype, name: agent.personality }
+      ? { 
+          archetype: agent.personality as PersonalityArchetype, 
+          name: agent.personality,
+          description: buildDescription(),
+        }
       : {
           archetype: agent.personality.base as PersonalityArchetype | undefined,
           name: agent.personality.name || agent.name,
+          description: buildDescription(),
           traits: agent.personality.traits || [],
           systemPromptAddition: agent.personality.systemPromptAddition || '',
           communicationStyle: agent.personality.communicationStyle || {

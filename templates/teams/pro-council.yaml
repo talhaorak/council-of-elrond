@@ -20,7 +20,7 @@ agents:
       Anthropic's most capable model.
       Deep reasoning, nuanced analysis, careful consideration.
     provider: openrouter
-    model: anthropic/claude-4.5-opus
+    model: anthropic/claude-opus-4.5
     personality:
       base: analyst
       name: Opus Analyst
@@ -78,7 +78,7 @@ agents:
       Google's advanced reasoning model.
       Multimodal understanding, strong technical analysis.
     provider: openrouter
-    model: google/gemini-3-pro
+    model: google/gemini-2.5-pro
     personality:
       base: innovator
       name: Gemini Innovator
@@ -107,7 +107,7 @@ agents:
       xAI's Grok 4.1 - sharp, witty, unconventional thinking.
       Challenges assumptions with humor and insight.
     provider: openrouter
-    model: x-ai/grok-4.1
+    model: x-ai/grok-4
     personality:
       base: devils-advocate
       name: Grok Challenger
@@ -191,7 +191,7 @@ agents:
 
 moderator:
   provider: openrouter
-  model: anthropic/claude-4.5-opus
+  model: anthropic/claude-opus-4.5
   temperature: 0.4
 
 arbiter:

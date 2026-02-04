@@ -18,7 +18,7 @@ agents:
   - name: DeepThinker
     description: DeepSeek V3 - powerful reasoning, completely free
     provider: openrouter
-    model: deepseek/deepseek-chat:free
+    model: deepseek/deepseek-r1-0528:free
     personality:
       base: analyst
       name: DeepThinker
@@ -41,7 +41,7 @@ agents:
   - name: LlamaWise
     description: Llama 3.1 8B - fast, capable, free
     provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
+    model: meta-llama/llama-3.3-70b-instruct:free
     personality:
       base: pragmatist
       name: LlamaWise
@@ -64,7 +64,7 @@ agents:
   - name: GemmaSkeptic
     description: Gemma 2 9B - Google's free offering
     provider: openrouter
-    model: google/gemma-2-9b-it:free
+    model: google/gemma-3-12b-it:free
     personality:
       base: skeptic
       name: GemmaSkeptic
@@ -87,7 +87,7 @@ agents:
   - name: MistralCreative
     description: Mistral 7B - creative and innovative
     provider: openrouter
-    model: mistralai/mistral-7b-instruct:free
+    model: mistralai/mistral-small-3.1-24b-instruct:free
     personality:
       base: innovator
       name: MistralCreative
@@ -109,7 +109,7 @@ agents:
 
 moderator:
   provider: openrouter
-  model: deepseek/deepseek-chat:free
+  model: deepseek/deepseek-r1-0528:free
   temperature: 0.5
 
 limits:
