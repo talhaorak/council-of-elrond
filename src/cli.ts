@@ -45,6 +45,7 @@ program
   .option('-p, --port <number>', 'Web UI port', '3000')
   .option('-w, --wizard', 'Start interactive wizard')
   .option('--workspace <path>', 'Working directory for sessions and config')
+  .option('--force', 'Start new session even if there is an incomplete one')
   .option('--debug', 'Enable debug logging')
   // Limits options
   .option('--max-cost <usd>', 'Maximum cost in USD before abort', '5.0')
@@ -70,14 +71,27 @@ program
       const hasConfig = await workspace.hasConfig();
       const hasIncomplete = await workspace.hasIncompleteSession();
 
-      if (hasIncomplete && !options.wizard && !options.web && !options.tui) {
+      if (hasIncomplete && !options.wizard && !options.web && !options.tui && !options.force) {
         const state = await workspace.loadCurrentState();
         if (state) {
           console.log(chalk.yellow('\n⚠ Incomplete session detected:'));
           console.log(chalk.dim(`  Topic: ${state.topic}`));
           console.log(chalk.dim(`  Phase: ${state.phase}, Round: ${state.round}/${state.totalRounds}`));
           console.log(chalk.dim(`  Last update: ${state.lastUpdate}`));
-          console.log(chalk.dim('\nUse --wizard to resume or clear, or --continue <session-id>\n'));
+          console.log(chalk.dim('\nOptions:'));
+          console.log(chalk.dim('  - Use --continue ' + state.sessionId + ' to resume'));
+          console.log(chalk.dim('  - Use --force to start a new session (archives incomplete one)'));
+          console.log(chalk.dim('  - Use --wizard for interactive management\n'));
+          process.exit(1);
+        }
+      }
+
+      // Archive incomplete session if --force is used (Bug fix #3)
+      if (hasIncomplete && options.force) {
+        const state = await workspace.loadCurrentState();
+        if (state) {
+          console.log(chalk.yellow(`\n⚠ Archiving incomplete session: ${state.sessionId}`));
+          await workspace.clearCurrentState();
         }
       }
 

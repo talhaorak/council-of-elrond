@@ -20,6 +20,7 @@ import { AgentFactory, type AgentDefinition } from '../agents/factory.js';
 import { type InterruptController, createInterruptController } from './interrupts.js';
 import { logger } from './logger.js';
 import { WorkspaceManager, type CurrentState } from './workspace.js';
+import { SessionManager } from '../output/state.js';
 import { CostTracker } from './cost-tracker.js';
 import { StructuredStateManager } from './structured-state.js';
 import { Arbiter } from './arbiter.js';
@@ -43,6 +44,7 @@ export class ConsensusEngine {
   private interruptController: InterruptController;
   private isWrappingUp: boolean = false;
   private workspace?: WorkspaceManager;
+  private sessionManager: SessionManager;
   private autoSaveCallback?: AutoSaveCallback;
   private currentAgentIndex: number = 0;
   private abortRequested: boolean = false;
@@ -60,6 +62,7 @@ export class ConsensusEngine {
     this.moderator = new Moderator(config.moderator);
     this.interruptController = interruptController || createInterruptController();
     this.workspace = workspace;
+    this.sessionManager = new SessionManager();
     
     // Initialize cost tracker
     this.costTracker = new CostTracker();
@@ -136,6 +139,18 @@ export class ConsensusEngine {
     }
 
     logger.debug('Engine', 'Auto-saved state', { phase: state.phase, round: state.round });
+  }
+
+  /**
+   * Save session to file (persists to .consensus/<sessionId>.json)
+   */
+  private async saveSessionToFile(): Promise<void> {
+    try {
+      await this.sessionManager.save(this.session);
+      logger.debug('Engine', 'Saved session to file', { sessionId: this.session.id });
+    } catch (error) {
+      logger.error('Engine', 'Failed to save session', { error: error instanceof Error ? error.message : error });
+    }
   }
 
   /**
@@ -756,6 +771,10 @@ export class ConsensusEngine {
     }
 
     await this.updateMetrics();
+    
+    // Save session after opening phase (Bug fix #1)
+    await this.saveSessionToFile();
+    
     this.protocol.advance();
   }
 
@@ -839,6 +858,9 @@ export class ConsensusEngine {
     // NEW: Update metrics after opening phase
     await this.updateMetrics();
 
+    // Save session after opening phase (Bug fix #1)
+    await this.saveSessionToFile();
+
     this.protocol.advance();
   }
 
@@ -917,6 +939,9 @@ export class ConsensusEngine {
       await this.finalizeModeratorMessage(summary);
       await this.emit({ type: 'round_complete', round, summary: summary.content });
       await this.emitDecisionGate();
+      
+      // Save session to file after each round (Bug fix #1)
+      await this.saveSessionToFile();
       
       const abortReason = await this.checkLimitsAndAbort();
       if (abortReason && abortReason.type !== 'needs_human') return;
@@ -1082,6 +1107,9 @@ export class ConsensusEngine {
           // NEW: Emit decision gate at end of round
           await this.emitDecisionGate();
           
+          // Save session to file after each round (Bug fix #1)
+          await this.saveSessionToFile();
+          
           const abortReason = await this.checkLimitsAndAbort();
           if (abortReason && abortReason.type !== 'needs_human') {
             return;
@@ -1138,6 +1166,10 @@ export class ConsensusEngine {
     }
 
     await this.updateMetrics();
+    
+    // Save session after synthesis phase (Bug fix #1)
+    await this.saveSessionToFile();
+    
     this.protocol.advance();
   }
 
@@ -1193,6 +1225,10 @@ export class ConsensusEngine {
     }
 
     await this.updateMetrics();
+    
+    // Save session after synthesis phase (Bug fix #1)
+    await this.saveSessionToFile();
+    
     this.protocol.advance();
   }
 
@@ -1221,6 +1257,9 @@ export class ConsensusEngine {
     this.session.finalConsensus = conclusion.content;
     this.session.isComplete = true;
 
+    // Save final session (Bug fix #1)
+    await this.saveSessionToFile();
+
     await this.emit({ type: 'consensus_reached', consensus: conclusion.content });
   }
 
@@ -1247,6 +1286,9 @@ export class ConsensusEngine {
     this.session.consensusReached = consensus.agreementLevel > 0.6;
     this.session.finalConsensus = conclusion.content;
     this.session.isComplete = true;
+
+    // Save final session (Bug fix #1)
+    await this.saveSessionToFile();
 
     yield { type: 'consensus_reached', consensus: conclusion.content };
   }

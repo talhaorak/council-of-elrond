@@ -172,6 +172,14 @@ export async function buildConfig(options: {
     throw new Error('Topic is required. Provide via --topic or config file.');
   }
 
+  // Warn if topic looks suspiciously short (may indicate shell variable interpolation) (Bug fix #2)
+  if (topic.trim().length < 5) {
+    throw new Error(
+      `Topic too short: "${topic}". ` +
+      'If using dollar signs ($), escape them or use single quotes: --topic \'$50 into $5000\''
+    );
+  }
+
   // Build depth
   const depth = options.depth ?? fileConfig.depth ?? 3;
 
