@@ -192,12 +192,26 @@ export class WorkspaceManager {
 
   /**
    * Check if there's an incomplete session
+   * Auto-cleans stale sessions older than 6 hours
    */
   async hasIncompleteSession(): Promise<boolean> {
     try {
       await access(join(this.consensusDir, STATE_FILE));
       const state = await this.loadCurrentState();
-      return state !== null && !state.completed;
+      if (state === null || state.completed) return false;
+      
+      // Auto-cleanup stale sessions (>6 hours old)
+      if (state.lastUpdate) {
+        const lastUpdate = new Date(state.lastUpdate).getTime();
+        const sixHoursMs = 6 * 60 * 60 * 1000;
+        if (Date.now() - lastUpdate > sixHoursMs) {
+          logger.info('Workspace', `Auto-cleaning stale session (last update: ${state.lastUpdate})`);
+          await this.clearCurrentState();
+          return false;
+        }
+      }
+      
+      return true;
     } catch {
       return false;
     }

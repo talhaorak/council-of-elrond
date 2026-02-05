@@ -48,10 +48,10 @@ program
   .option('--force', 'Start new session even if there is an incomplete one')
   .option('--debug', 'Enable debug logging')
   // Limits options
-  .option('--max-cost <usd>', 'Maximum cost in USD before abort', '5.0')
-  .option('--max-time <minutes>', 'Maximum duration in minutes', '10')
+  .option('--max-cost <usd>', 'Maximum cost in USD before abort')
+  .option('--max-time <minutes>', 'Maximum duration in minutes')
   .option('--max-tokens <count>', 'Maximum total tokens')
-  .option('--max-blockers <count>', 'Maximum unresolved blockers before abort', '20')
+  .option('--max-blockers <count>', 'Maximum unresolved blockers before abort')
   .option('--require-human', 'Pause on critical blockers and request human decision')
   .option('--human-decision <text>', 'Provide a human decision to resolve critical blockers')
   .option('--json', 'Output machine-readable JSON to stdout')
@@ -127,6 +127,8 @@ program
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
       logger.error('CLI', 'Fatal error', { error: error instanceof Error ? error.message : error });
+      await logger.flush();
+      logger.destroy();
       process.exit(1);
     }
   });
@@ -293,13 +295,31 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     teamTemplate,
   });
 
-  // Add limits from CLI options
+  // Add limits (prefer explicit CLI flags; otherwise fall back to team template limits if present)
+  const teamLimits = teamTemplate?.limits;
+  const maxCostUsd = options.maxCost !== undefined
+    ? parseFloat(options.maxCost)
+    : (teamLimits?.maxCostUsd ?? 5.0);
+
+  const maxDurationMs = options.maxTime !== undefined
+    ? parseFloat(options.maxTime) * 60 * 1000
+    : (teamLimits?.maxDurationMs ?? (10 * 60 * 1000));
+
+  const maxTokens = options.maxTokens !== undefined
+    ? parseInt(options.maxTokens)
+    : (teamLimits?.maxTokens ?? undefined);
+
+  const maxBlockers = options.maxBlockers !== undefined
+    ? parseInt(options.maxBlockers)
+    : (teamLimits?.maxBlockers ?? 20);
+
   config.limits = {
-    maxCostUsd: parseFloat(options.maxCost) || 5.0,
-    maxDurationMs: (parseFloat(options.maxTime) || 10) * 60 * 1000,
-    maxTokens: options.maxTokens ? parseInt(options.maxTokens) : undefined,
-    maxBlockers: parseInt(options.maxBlockers) || 20,
-    requireHumanDecision: Boolean(options.requireHuman),
+    maxCostUsd,
+    maxDurationMs,
+    maxTokens,
+    maxBlockers,
+    maxConsecutiveDisagreements: teamLimits?.maxConsecutiveDisagreements,
+    requireHumanDecision: options.requireHuman ? true : (teamLimits?.requireHumanDecision ?? false),
   };
 
   if (!options.json) {
@@ -395,7 +415,10 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     if (config.outputPath) {
       await writeMarkdownFile(output, config.outputPath);
     }
-    return;
+    // Clean exit — destroy logger to clear setInterval, then exit
+    await logger.flush();
+    logger.destroy();
+    process.exit(0);
   }
 
   if (config.outputToStdout) {
@@ -413,6 +436,11 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
   }
 
   console.log(chalk.dim(`Session ID: ${activeEngine.getSession().id}`));
+  
+  // Clean exit — destroy logger to clear setInterval, then exit
+  await logger.flush();
+  logger.destroy();
+  process.exit(0);
 }
 
 /**
@@ -502,12 +530,20 @@ async function continueSession(sessionId: string, options: any, workspace: Works
     if (options.output) {
       await writeMarkdownFile(output, options.output);
     }
-    return;
+    // Clean exit
+    await logger.flush();
+    logger.destroy();
+    process.exit(0);
   }
 
   const filename = options.output || generateFilename(session.config.topic, activeEngine.getSession().id);
   await writeMarkdownFile(output, filename);
   console.log(chalk.green(`\n✓ Output saved to ${filename}`));
+  
+  // Clean exit
+  await logger.flush();
+  logger.destroy();
+  process.exit(0);
 }
 
 async function getHumanDecision(options: any): Promise<string | null> {

@@ -36,8 +36,8 @@ export function checkLimits(
   costTracker: CostTracker,
   openBlockers: Blocker[]
 ): AbortReason | null {
-  // Check cost limit
-  if (limits.maxCostUsd !== undefined) {
+  // Check cost limit (0 means unlimited — skip check)
+  if (limits.maxCostUsd !== undefined && limits.maxCostUsd > 0) {
     const currentCost = costTracker.getTotalCost();
     if (currentCost > limits.maxCostUsd) {
       logger.warn('Limits', `Cost limit exceeded: $${currentCost.toFixed(2)} > $${limits.maxCostUsd}`);

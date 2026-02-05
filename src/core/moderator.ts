@@ -76,6 +76,22 @@ When providing summaries or transitions, structure your response clearly:
   }
 
   /**
+   * Helper: call provider with timeout
+   */
+  private async chatWithTimeout(
+    messages: ChatMessage[],
+    options?: { temperature?: number; maxTokens?: number },
+    timeoutMs: number = 180_000
+  ): Promise<string> {
+    return Promise.race([
+      this.provider.chat(messages, options),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Moderator timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+      ),
+    ]);
+  }
+
+  /**
    * Generate the opening introduction
    */
   async introduce(
@@ -114,7 +130,7 @@ Keep it concise (2-3 paragraphs).`;
     logger.moderator(`Calling provider for introduction (model: ${this.config.model})`);
     const startTime = Date.now();
     
-    const response = await this.provider.chat(messages, {
+    const response = await this.chatWithTimeout(messages, {
       temperature: this.config.temperature ?? 0.5,
     });
 
@@ -159,7 +175,7 @@ Format your response with clear sections.`;
       { role: 'user', content: prompt },
     ];
 
-    const response = await this.provider.chat(messages_, {
+    const response = await this.chatWithTimeout(messages_, {
       temperature: this.config.temperature ?? 0.5,
     });
 
@@ -210,7 +226,7 @@ Keep it concise (1-2 paragraphs).`;
       { role: 'user', content: prompt },
     ];
 
-    const response = await this.provider.chat(messages_, {
+    const response = await this.chatWithTimeout(messages_, {
       temperature: this.config.temperature ?? 0.5,
     });
 
@@ -258,7 +274,7 @@ Be thorough but structured. This will be the primary output of the discussion.`;
       { role: 'user', content: prompt },
     ];
 
-    const response = await this.provider.chat(messages_, {
+    const response = await this.chatWithTimeout(messages_, {
       temperature: this.config.temperature ?? 0.3,
       maxTokens: 2048,
     });

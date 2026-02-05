@@ -96,7 +96,7 @@ export class OpenRouterProvider extends BaseProvider {
 
     const model = this.defaultModel;
 
-    const maxRetries = 2;
+    const maxRetries = parseInt(process.env.OPENROUTER_MAX_RETRIES || '4', 10);
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -115,7 +115,7 @@ export class OpenRouterProvider extends BaseProvider {
           max_tokens: options?.maxTokens || 4096,
           temperature: options?.temperature ?? 0.7,
         }),
-        signal: AbortSignal.timeout(120_000), // 120s per-request timeout
+        signal: AbortSignal.timeout(parseInt(process.env.OPENROUTER_TIMEOUT_MS || '300000', 10)), // configurable; default 300s
       });
 
       if (!response.ok) {
@@ -175,7 +175,7 @@ export class OpenRouterProvider extends BaseProvider {
         temperature: options?.temperature ?? 0.7,
         stream: true,
       }),
-      signal: AbortSignal.timeout(180_000), // 180s for streaming
+      signal: AbortSignal.timeout(parseInt(process.env.OPENROUTER_STREAM_TIMEOUT_MS || '600000', 10)), // configurable; default 600s
     });
 
     if (!response.ok) {

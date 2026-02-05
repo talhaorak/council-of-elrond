@@ -11,6 +11,7 @@ import type {
   Blocker,
 } from '../core/types.js';
 import { createProvider } from '../providers/index.js';
+import { logger } from '../core/logger.js';
 
 /**
  * Represents an AI agent participating in the consensus discussion
@@ -197,10 +198,36 @@ RULES:
       { role: 'user', content: context },
     ];
 
-    const response = await this.provider.chat(this.conversationHistory, {
-      temperature: this.config.temperature ?? 0.7,
-      maxTokens: this.config.maxTokens ?? 1024,
-    });
+    // Per-agent timeout: 120s default (prevents one hung model from killing the whole session)
+    const agentTimeoutMs = this.config.timeoutMs ?? 120_000;
+    let response: string;
+    try {
+      response = await Promise.race([
+        this.provider.chat(this.conversationHistory, {
+          temperature: this.config.temperature ?? 0.7,
+          maxTokens: this.config.maxTokens ?? 1024,
+        }),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error(`Agent "${this.name}" timed out after ${agentTimeoutMs / 1000}s`)), agentTimeoutMs)
+        ),
+      ]);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`Agent:${this.name}`, `Response failed: ${errMsg}`);
+      // Return a PASS stance on timeout/error instead of crashing the whole session
+      return {
+        id: nanoid(),
+        agentId: this.id,
+        agentName: this.name,
+        timestamp: new Date(),
+        phase,
+        round: currentRound,
+        stance: 'PASS' as Stance,
+        content: `[Agent error: ${errMsg}]`,
+        referencedMessageIds: [],
+        keyPoints: [],
+      };
+    }
 
     const { stance, content, keyPoints, blockers } = this.parseResponse(response);
 
