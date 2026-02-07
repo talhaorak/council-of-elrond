@@ -7,6 +7,7 @@ import type {
   ModeratorConfig,
   Provider,
   Personality,
+  DiscussionAlgorithmName,
 } from '../core/types.js';
 import { DiscussionConfigSchema } from '../core/types.js';
 import { loadPersonality, extendPersonality } from '../agents/personalities/index.js';
@@ -20,6 +21,7 @@ import type { LoadedTeam } from './teams.js';
 const ConfigFileSchema = z.object({
   topic: z.string().optional(),
   depth: z.number().int().min(1).max(10).optional().default(3),
+  algorithm: z.enum(['sequential', 'parallel-sequential', 'six-hats', 'debate', 'delphi']).optional(),
   
   moderator: z.object({
     provider: z.string().optional(),
@@ -98,6 +100,7 @@ export async function buildConfig(options: {
   configFile?: string;
   topic?: string;
   depth?: number;
+  algorithm?: DiscussionAlgorithmName;
   agents?: string[]; // Format: "provider:model:personality" or "provider:personality"
   moderatorProvider?: string;
   moderatorModel?: string;
@@ -182,6 +185,7 @@ export async function buildConfig(options: {
 
   // Build depth
   const depth = options.depth ?? fileConfig.depth ?? 3;
+  const algorithm = options.algorithm ?? fileConfig.algorithm ?? 'sequential';
 
   // Build agents
   let agentConfigs: AgentConfig[] = [];
@@ -234,6 +238,7 @@ export async function buildConfig(options: {
   return {
     topic,
     depth,
+    algorithm,
     agents: agentConfigs,
     moderator: moderatorConfig,
     outputPath,
@@ -402,6 +407,10 @@ topic: "The most feasible and performant REST API architecture for Go applicatio
 
 # Number of discussion rounds (1-10)
 depth: 3
+
+# Discussion algorithm
+# Options: sequential | parallel-sequential | six-hats | debate | delphi
+algorithm: sequential
 
 # Default settings for all agents
 defaults:

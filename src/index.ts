@@ -19,6 +19,7 @@ export { createProvider } from './providers/index.js';
 
 // Config exports
 export { buildConfig, validateConfig, loadConfigFile } from './config/loader.js';
+export { getDiscussionAlgorithm, listDiscussionAlgorithms } from './algorithms/index.js';
 
 // Output exports
 export { generateMarkdown, generateCompactSummary } from './output/markdown.js';

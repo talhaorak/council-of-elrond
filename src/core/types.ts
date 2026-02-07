@@ -35,6 +35,17 @@ export const Provider = {
 
 export type Provider = (typeof Provider)[keyof typeof Provider];
 
+export const DiscussionAlgorithm = {
+  SEQUENTIAL: 'sequential',
+  PARALLEL_SEQUENTIAL: 'parallel-sequential',
+  SIX_HATS: 'six-hats',
+  DEBATE: 'debate',
+  DELPHI: 'delphi',
+} as const;
+
+export type DiscussionAlgorithmName =
+  (typeof DiscussionAlgorithm)[keyof typeof DiscussionAlgorithm];
+
 // ============================================================================
 // PERSONALITY SYSTEM
 // ============================================================================
@@ -85,6 +96,7 @@ export interface AgentConfig {
   baseUrl?: string; // For Ollama/LM Studio
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number; // Per-agent timeout for LLM calls
 }
 
 export interface ModeratorConfig {
@@ -145,6 +157,7 @@ export function isModeratorMessage(msg: Message): msg is ModeratorMessage {
 export interface DiscussionConfig {
   topic: string;
   depth: number; // Number of discussion rounds
+  algorithm?: DiscussionAlgorithmName;
   agents: AgentConfig[];
   moderator: ModeratorConfig;
   arbiter?: ArbiterConfig;  // Optional arbiter for tie-breaking
@@ -467,6 +480,7 @@ export const ModeratorConfigSchema = z.object({
 export const DiscussionConfigSchema = z.object({
   topic: z.string().min(1),
   depth: z.number().int().min(1).max(10),
+  algorithm: z.enum(['sequential', 'parallel-sequential', 'six-hats', 'debate', 'delphi']).optional(),
   agents: z.array(AgentConfigSchema).min(2),
   moderator: ModeratorConfigSchema,
   outputPath: z.string().optional(),

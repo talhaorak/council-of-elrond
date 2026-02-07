@@ -16,6 +16,7 @@ import type {
   Provider,
   PersonalityArchetype,
   SessionState,
+  DiscussionAlgorithmName,
 } from './core/types.js';
 
 // Re-export useful types
@@ -51,6 +52,8 @@ export interface ConsensusOptions {
   agents: SimpleAgent[];
   /** Number of discussion rounds (default: 3) */
   depth?: number;
+  /** Discussion algorithm (default: sequential) */
+  algorithm?: DiscussionAlgorithmName;
   /** Provider for moderator (default: same as first agent) */
   moderatorProvider?: Provider;
   /** Model for moderator */
@@ -117,6 +120,7 @@ export async function runConsensus(options: ConsensusOptions): Promise<Consensus
     topic,
     agents,
     depth = 3,
+    algorithm,
     moderatorProvider,
     moderatorModel,
     outputPath,
@@ -135,6 +139,7 @@ export async function runConsensus(options: ConsensusOptions): Promise<Consensus
   const config = await buildConfig({
     topic,
     depth,
+    algorithm,
     agents: agentSpecs,
     moderatorProvider: moderatorProvider || agents[0]?.provider || 'lmstudio',
     moderatorModel: moderatorModel || agents[0]?.model || 'qwen/qwen3-coder-30b',

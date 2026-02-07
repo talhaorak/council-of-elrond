@@ -25,6 +25,13 @@ import { CostTracker } from './cost-tracker.js';
 import { StructuredStateManager } from './structured-state.js';
 import { Arbiter } from './arbiter.js';
 import { checkLimits, calculateDecisionGate, DEFAULT_LIMITS } from './limits.js';
+import { getDiscussionAlgorithm } from '../algorithms/index.js';
+import type {
+  DiscussionAlgorithm,
+  DiscussionContextMode,
+  DiscussionRoundPlan,
+  DiscussionSummaryMode,
+} from '../algorithms/index.js';
 
 export type EventHandler = (event: ConsensusEvent) => void | Promise<void>;
 
@@ -55,6 +62,7 @@ export class ConsensusEngine {
   private structuredState: StructuredStateManager;
   private arbiter?: Arbiter;
   private consecutiveDisagreements: number = 0;
+  private discussionAlgorithm: DiscussionAlgorithm;
 
   constructor(config: DiscussionConfig, interruptController?: InterruptController, workspace?: WorkspaceManager) {
     this.config = config;
@@ -74,6 +82,7 @@ export class ConsensusEngine {
     if (config.arbiter) {
       this.arbiter = new Arbiter(config.arbiter);
     }
+    this.discussionAlgorithm = getDiscussionAlgorithm(config.algorithm);
     
     this.session = {
       id: nanoid(),
@@ -869,82 +878,27 @@ export class ConsensusEngine {
    */
   private async runDiscussionPhase(startRound: number = 1): Promise<void> {
     this.session.currentPhase = 'DISCUSSION';
-    
-    const discussionRounds = this.config.depth - 1; // Reserve last round for synthesis
-    
-    for (let round = startRound; round <= discussionRounds; round++) {
-      // Check for interrupts at start of each round
+    const plans = this.discussionAlgorithm.createRoundPlans({
+      depth: this.config.depth,
+      startRound,
+      agentCount: this.agents.length,
+    });
+
+    for (const plan of plans) {
       if (this.shouldStop() || this.shouldWrapUp()) break;
 
-      this.session.currentRound = round;
-      await this.emit({ type: 'phase_change', phase: 'DISCUSSION', round });
+      this.session.currentRound = plan.round;
+      await this.emit({ type: 'phase_change', phase: 'DISCUSSION', round: plan.round });
 
-      // Get speaking order
-      const speakingOrder = DiscussionProtocol.determineSpeakingOrder(
-        this.agents.map((a) => a.id),
-        this.session.messages,
-        'round-robin'
-      );
+      const roundAborted = plan.mode === 'parallel'
+        ? await this.runDiscussionRoundParallel(plan)
+        : await this.runDiscussionRoundSequential(plan);
 
-      // Get last moderator summary if available
-      const lastSummary = this.session.messages
-        .filter((m): m is ModeratorMessage => 'type' in m && m.type === 'summary')
-        .pop();
-
-      // Each agent speaks
-      for (const agentId of speakingOrder) {
-        // Check for interrupts before each agent
-        if (this.shouldStop() || this.shouldWrapUp()) break;
-
-        const agent = this.agents.find((a) => a.id === agentId)!;
-        await this.emit({ type: 'agent_speaking', agentId: agent.id, agentName: agent.name });
-        
-        const message = await agent.respond(
-          this.config.topic,
-          this.config.depth,
-          round,
-          'DISCUSSION',
-          this.session.messages,
-          lastSummary?.content
-        );
-        
-        this.addMessage(message);
-        this.protocol.recordAgentMessage();
-        await this.emit({ type: 'agent_message_complete', message });
-        await this.finalizeAgentMessage(agent, message, { trackDisagreements: true });
-        
-        const abortReason = await this.checkLimitsAndAbort();
-        if (abortReason && abortReason.type !== 'needs_human') return;
-      }
-
-      // Skip summary if interrupted
+      if (roundAborted) return;
       if (this.shouldStop() || this.shouldWrapUp()) break;
 
-      // Update metrics and arbitration before summary
-      await this.updateMetrics();
-      if (this.arbiter && Arbiter.needsArbitration(this.structuredState.getState())) {
-        await this.invokeArbiterIfNeeded();
-      }
-
-      // Moderator summarizes the round
-      await this.emit({ type: 'moderator_speaking' });
-      const summary = await this.moderator.summarizeRound(
-        this.config.topic,
-        this.session.messages,
-        round,
-        this.config.depth
-      );
-      this.addMessage(summary);
-      await this.emit({ type: 'moderator_message_complete', message: summary });
-      await this.finalizeModeratorMessage(summary);
-      await this.emit({ type: 'round_complete', round, summary: summary.content });
-      await this.emitDecisionGate();
-      
-      // Save session to file after each round (Bug fix #1)
-      await this.saveSessionToFile();
-      
-      const abortReason = await this.checkLimitsAndAbort();
-      if (abortReason && abortReason.type !== 'needs_human') return;
+      const summaryAborted = await this.runDiscussionRoundSummary(plan.round, plan.summaryMode);
+      if (summaryAborted) return;
 
       this.protocol.advance();
     }
@@ -956,169 +910,422 @@ export class ConsensusEngine {
   private async *runDiscussionPhaseStream(startRound: number = 1): AsyncIterable<ConsensusEvent> {
     this.session.currentPhase = 'DISCUSSION';
     logger.info('Engine', 'Starting DISCUSSION phase');
-    
-    const discussionRounds = this.config.depth - 1;
-    
-    for (let round = startRound; round <= discussionRounds; round++) {
-      // Check for interrupts at start of each round
+    const plans = this.discussionAlgorithm.createRoundPlans({
+      depth: this.config.depth,
+      startRound,
+      agentCount: this.agents.length,
+    });
+
+    for (const plan of plans) {
       if (this.shouldStop() || this.shouldWrapUp()) return;
 
-      this.session.currentRound = round;
-      logger.info('Engine', `Starting round ${round}/${discussionRounds}`);
-      yield { type: 'phase_change', phase: 'DISCUSSION', round };
+      this.session.currentRound = plan.round;
+      logger.info('Engine', `Starting round ${plan.round}/${plans.length} (${plan.mode})`);
+      yield { type: 'phase_change', phase: 'DISCUSSION', round: plan.round };
 
-      const speakingOrder = DiscussionProtocol.determineSpeakingOrder(
-        this.agents.map((a) => a.id),
-        this.session.messages,
-        'round-robin'
+      const roundAborted = plan.mode === 'parallel'
+        ? yield* this.runDiscussionRoundParallelStream(plan)
+        : yield* this.runDiscussionRoundSequentialStream(plan);
+
+      if (roundAborted) return;
+      if (this.shouldStop() || this.shouldWrapUp()) return;
+
+      const summaryAborted = yield* this.runDiscussionRoundSummaryStream(
+        plan.round,
+        plan.summaryMode
+      );
+      if (summaryAborted) return;
+
+      this.protocol.advance();
+    }
+  }
+
+  private getSpeakingOrderForPlan(plan: DiscussionRoundPlan): string[] {
+    const baseOrder = DiscussionProtocol.determineSpeakingOrder(
+      this.agents.map((a) => a.id),
+      this.session.messages,
+      'round-robin'
+    );
+
+    if (plan.rotateOffset <= 0 || baseOrder.length <= 1) {
+      return baseOrder;
+    }
+
+    const offset = plan.rotateOffset % baseOrder.length;
+    return [...baseOrder.slice(offset), ...baseOrder.slice(0, offset)];
+  }
+
+  private getLastSummary(): ModeratorMessage | undefined {
+    return this.session.messages
+      .filter((m): m is ModeratorMessage => 'type' in m && m.type === 'summary')
+      .pop();
+  }
+
+  private anonymizeMessages(messages: Message[]): Message[] {
+    const aliases = new Map<string, string>();
+    let aliasCount = 0;
+
+    return messages.map((message) => {
+      if (!('agentId' in message)) {
+        return message;
+      }
+
+      let alias = aliases.get(message.agentId);
+      if (!alias) {
+        aliasCount++;
+        alias = `Panelist ${aliasCount}`;
+        aliases.set(message.agentId, alias);
+      }
+
+      return {
+        ...message,
+        agentName: alias,
+      };
+    });
+  }
+
+  private getDebateContext(agent: Agent, round: number, messages: Message[]): Message[] {
+    const otherAgentMessages = messages
+      .filter((message): message is AgentMessage => 'agentId' in message)
+      .filter((message) => message.agentId !== agent.id)
+      .filter((message) => message.phase !== 'DISCUSSION' || message.round >= Math.max(1, round - 1))
+      .slice(-10);
+
+    const moderatorMessages = messages
+      .filter((message): message is ModeratorMessage => 'type' in message)
+      .slice(-3);
+
+    return [...moderatorMessages, ...otherAgentMessages];
+  }
+
+  private getContextMessagesForAgent(
+    mode: DiscussionContextMode,
+    agent: Agent,
+    round: number,
+    sourceMessages?: Message[]
+  ): Message[] {
+    const baseMessages = sourceMessages || this.session.messages;
+
+    switch (mode) {
+      case 'debate':
+        return this.getDebateContext(agent, round, baseMessages);
+      case 'anonymous':
+        return this.anonymizeMessages(baseMessages);
+      case 'full':
+      default:
+        return baseMessages;
+    }
+  }
+
+  private getSummaryMessages(mode: DiscussionSummaryMode): Message[] {
+    return mode === 'anonymous'
+      ? this.anonymizeMessages(this.session.messages)
+      : this.session.messages;
+  }
+
+  private async runDiscussionRoundSequential(plan: DiscussionRoundPlan): Promise<boolean> {
+    const speakingOrder = this.getSpeakingOrderForPlan(plan);
+    const lastSummary = this.getLastSummary();
+
+    for (const agentId of speakingOrder) {
+      if (this.shouldStop() || this.shouldWrapUp()) return false;
+
+      const agent = this.agents.find((a) => a.id === agentId)!;
+      const contextMessages = this.getContextMessagesForAgent(
+        plan.contextMode,
+        agent,
+        plan.round
       );
 
-      const lastSummary = this.session.messages
-        .filter((m): m is ModeratorMessage => 'type' in m && m.type === 'summary')
-        .pop();
+      await this.emit({ type: 'agent_speaking', agentId: agent.id, agentName: agent.name });
 
-      for (let i = 0; i < speakingOrder.length; i++) {
-        const agentId = speakingOrder[i];
-        this.currentAgentIndex = i;
-        
-        // Check for interrupts before each agent
-        if (this.shouldStop() || this.shouldWrapUp()) return;
+      const message = await agent.respond(
+        this.config.topic,
+        this.config.depth,
+        plan.round,
+        'DISCUSSION',
+        contextMessages,
+        lastSummary?.content
+      );
 
-        // Check for skip
-        if (this.checkSkip()) {
-          const agent = this.agents.find((a) => a.id === agentId)!;
-          logger.agent(agent.name, 'Skipped by user');
-          yield { type: 'agent_skipped', agentId: agent.id, agentName: agent.name };
-          continue;
-        }
+      this.addMessage(message);
+      this.protocol.recordAgentMessage();
+      await this.emit({ type: 'agent_message_complete', message });
+      await this.finalizeAgentMessage(agent, message, { trackDisagreements: true });
 
-        const agent = this.agents.find((a) => a.id === agentId)!;
-        logger.info('Engine', `Waiting for ${agent.name} to respond... (${agent.config.provider}:${agent.config.model})`);
-        yield { type: 'agent_speaking', agentId: agent.id, agentName: agent.name };
-        
-        let wasSkipped = false;
-        let hasReceivedContent = false;
-        const thinkingStart = Date.now();
-        let lastThinkingEmit = 0;
-        
-        for await (const { chunk, partialMessage } of agent.respondStream(
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return true;
+    }
+
+    return false;
+  }
+
+  private async runDiscussionRoundParallel(plan: DiscussionRoundPlan): Promise<boolean> {
+    const speakingOrder = this.getSpeakingOrderForPlan(plan);
+    const orderedAgents = speakingOrder
+      .map((agentId) => this.agents.find((agent) => agent.id === agentId))
+      .filter((agent): agent is Agent => !!agent);
+
+    const lastSummary = this.getLastSummary();
+    const contextSnapshot = this.session.messages.slice();
+    const activeAgents: Agent[] = [];
+
+    for (const agent of orderedAgents) {
+      if (this.shouldStop() || this.shouldWrapUp()) return false;
+
+      if (this.checkSkip()) {
+        await this.emit({ type: 'agent_skipped', agentId: agent.id, agentName: agent.name });
+        continue;
+      }
+      await this.emit({ type: 'agent_speaking', agentId: agent.id, agentName: agent.name });
+      activeAgents.push(agent);
+    }
+
+    const responses = await Promise.all(
+      activeAgents.map(async (agent) => {
+        const contextMessages = this.getContextMessagesForAgent(
+          plan.contextMode,
+          agent,
+          plan.round,
+          contextSnapshot
+        );
+
+        const message = await agent.respond(
           this.config.topic,
           this.config.depth,
-          round,
+          plan.round,
           'DISCUSSION',
-          this.session.messages,
+          contextMessages,
           lastSummary?.content
-        )) {
-          // Check for hard interrupt during streaming
-          if (this.shouldStop()) return;
-          
-          // Check for skip during streaming
-          if (this.checkSkip()) {
-            logger.agent(agent.name, 'Skipped during response');
-            wasSkipped = true;
-            break;
-          }
+        );
 
-          // Emit thinking event if no content received yet and enough time has passed
-          if (!hasReceivedContent && !chunk.content) {
-            const elapsed = Math.floor((Date.now() - thinkingStart) / 1000);
-            if (elapsed >= 5 && elapsed - lastThinkingEmit >= 5) {
-              lastThinkingEmit = elapsed;
-              logger.info('Engine', `${agent.name} still thinking... (${elapsed}s)`);
-              yield { type: 'agent_thinking', agentId: agent.id, agentName: agent.name, elapsed };
-            }
-          }
+        return { agent, message };
+      })
+    );
 
-          if (chunk.content) {
-            hasReceivedContent = true;
-            yield { type: 'agent_message_chunk', agentId: agent.id, content: chunk.content };
-          }
-          if (partialMessage) {
-            const totalTime = Math.floor((Date.now() - thinkingStart) / 1000);
-            this.addMessage(partialMessage);
-            this.protocol.recordAgentMessage();
-            logger.info('Engine', `${agent.name} completed response (${totalTime}s)`);
-            yield { type: 'agent_message_complete', message: partialMessage };
-            
-            await this.finalizeAgentMessage(agent, partialMessage, { trackDisagreements: true });
-          }
-        }
+    for (const { agent, message } of responses) {
+      this.addMessage(message);
+      this.protocol.recordAgentMessage();
+      await this.emit({ type: 'agent_message_complete', message });
+      await this.finalizeAgentMessage(agent, message, { trackDisagreements: true });
 
-        if (wasSkipped) {
-          yield { type: 'agent_skipped', agentId: agent.id, agentName: agent.name };
-        }
-        
-        // NEW: Check limits after each agent
-        const abortReason = await this.checkLimitsAndAbort();
-        if (abortReason && abortReason.type !== 'needs_human') {
-          return;
-        }
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return true;
+    }
+
+    return false;
+  }
+
+  private async runDiscussionRoundSummary(
+    round: number,
+    summaryMode: DiscussionSummaryMode
+  ): Promise<boolean> {
+    await this.updateMetrics();
+    if (this.arbiter && Arbiter.needsArbitration(this.structuredState.getState())) {
+      await this.invokeArbiterIfNeeded();
+    }
+
+    await this.emit({ type: 'moderator_speaking' });
+    const summary = await this.moderator.summarizeRound(
+      this.config.topic,
+      this.getSummaryMessages(summaryMode),
+      round,
+      this.config.depth
+    );
+    this.addMessage(summary);
+    await this.emit({ type: 'moderator_message_complete', message: summary });
+    await this.finalizeModeratorMessage(summary);
+    await this.emit({ type: 'round_complete', round, summary: summary.content });
+    await this.emitDecisionGate();
+    await this.saveSessionToFile();
+
+    const abortReason = await this.checkLimitsAndAbort();
+    return !!abortReason && abortReason.type !== 'needs_human';
+  }
+
+  private async *runDiscussionRoundSequentialStream(
+    plan: DiscussionRoundPlan
+  ): AsyncGenerator<ConsensusEvent, boolean, unknown> {
+    const speakingOrder = this.getSpeakingOrderForPlan(plan);
+    const lastSummary = this.getLastSummary();
+
+    for (let index = 0; index < speakingOrder.length; index++) {
+      const agentId = speakingOrder[index];
+      this.currentAgentIndex = index;
+
+      if (this.shouldStop() || this.shouldWrapUp()) return false;
+
+      if (this.checkSkip()) {
+        const skippedAgent = this.agents.find((a) => a.id === agentId)!;
+        yield { type: 'agent_skipped', agentId: skippedAgent.id, agentName: skippedAgent.name };
+        continue;
       }
 
-      // Skip summary if interrupted
-      if (this.shouldStop() || this.shouldWrapUp()) return;
-      
-      // NEW: Update metrics and check for arbitration at end of agent loop
-      const metrics = await this.updateMetrics();
-      
-      // Check if arbitration is needed
-      if (this.arbiter && Arbiter.needsArbitration(this.structuredState.getState())) {
-        await this.invokeArbiterIfNeeded();
-      }
+      const agent = this.agents.find((a) => a.id === agentId)!;
+      const contextMessages = this.getContextMessagesForAgent(
+        plan.contextMode,
+        agent,
+        plan.round
+      );
 
-      // Moderator summary (streaming)
-      logger.info('Engine', `Waiting for Moderator to summarize round ${round}...`);
-      yield { type: 'moderator_speaking' };
-      
-      let hasReceivedModContent = false;
-      const modThinkingStart = Date.now();
-      let lastModThinkingEmit = 0;
-      
-      for await (const { chunk, message } of this.moderator.summarizeRoundStream(
+      yield { type: 'agent_speaking', agentId: agent.id, agentName: agent.name };
+
+      let wasSkipped = false;
+      let hasReceivedContent = false;
+      const thinkingStart = Date.now();
+      let lastThinkingEmit = 0;
+
+      for await (const { chunk, partialMessage } of agent.respondStream(
         this.config.topic,
-        this.session.messages,
-        round,
-        this.config.depth
+        this.config.depth,
+        plan.round,
+        'DISCUSSION',
+        contextMessages,
+        lastSummary?.content
       )) {
-        if (this.shouldStop()) return;
+        if (this.shouldStop()) return false;
 
-        // Emit thinking event if no content received yet
-        if (!hasReceivedModContent && !chunk.content) {
-          const elapsed = Math.floor((Date.now() - modThinkingStart) / 1000);
-          if (elapsed >= 5 && elapsed - lastModThinkingEmit >= 5) {
-            lastModThinkingEmit = elapsed;
-            logger.info('Engine', `Moderator still thinking... (${elapsed}s)`);
-            yield { type: 'moderator_thinking', elapsed };
+        if (this.checkSkip()) {
+          wasSkipped = true;
+          break;
+        }
+
+        if (!hasReceivedContent && !chunk.content) {
+          const elapsed = Math.floor((Date.now() - thinkingStart) / 1000);
+          if (elapsed >= 5 && elapsed - lastThinkingEmit >= 5) {
+            lastThinkingEmit = elapsed;
+            yield { type: 'agent_thinking', agentId: agent.id, agentName: agent.name, elapsed };
           }
         }
 
         if (chunk.content) {
-          hasReceivedModContent = true;
-          yield { type: 'moderator_message_chunk', content: chunk.content };
+          hasReceivedContent = true;
+          yield { type: 'agent_message_chunk', agentId: agent.id, content: chunk.content };
         }
-        if (message) {
-          const totalTime = Math.floor((Date.now() - modThinkingStart) / 1000);
-          this.addMessage(message);
-          logger.info('Engine', `Moderator completed summary (${totalTime}s)`);
-          yield { type: 'moderator_message_complete', message };
-          yield { type: 'round_complete', round, summary: message.content };
-          await this.finalizeModeratorMessage(message);
-          
-          // NEW: Emit decision gate at end of round
-          await this.emitDecisionGate();
-          
-          // Save session to file after each round (Bug fix #1)
-          await this.saveSessionToFile();
-          
-          const abortReason = await this.checkLimitsAndAbort();
-          if (abortReason && abortReason.type !== 'needs_human') {
-            return;
-          }
+        if (partialMessage) {
+          this.addMessage(partialMessage);
+          this.protocol.recordAgentMessage();
+          yield { type: 'agent_message_complete', message: partialMessage };
+          await this.finalizeAgentMessage(agent, partialMessage, { trackDisagreements: true });
         }
       }
 
-      this.protocol.advance();
+      if (wasSkipped) {
+        yield { type: 'agent_skipped', agentId: agent.id, agentName: agent.name };
+      }
+
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return true;
     }
+
+    return false;
+  }
+
+  private async *runDiscussionRoundParallelStream(
+    plan: DiscussionRoundPlan
+  ): AsyncGenerator<ConsensusEvent, boolean, unknown> {
+    const speakingOrder = this.getSpeakingOrderForPlan(plan);
+    const orderedAgents = speakingOrder
+      .map((agentId) => this.agents.find((agent) => agent.id === agentId))
+      .filter((agent): agent is Agent => !!agent);
+
+    const lastSummary = this.getLastSummary();
+    const contextSnapshot = this.session.messages.slice();
+    const activeAgents: Agent[] = [];
+
+    for (const agent of orderedAgents) {
+      if (this.checkSkip()) {
+        yield { type: 'agent_skipped', agentId: agent.id, agentName: agent.name };
+        continue;
+      }
+      yield { type: 'agent_speaking', agentId: agent.id, agentName: agent.name };
+      activeAgents.push(agent);
+    }
+
+    const responses = await Promise.all(
+      activeAgents.map(async (agent) => {
+        const contextMessages = this.getContextMessagesForAgent(
+          plan.contextMode,
+          agent,
+          plan.round,
+          contextSnapshot
+        );
+        const message = await agent.respond(
+          this.config.topic,
+          this.config.depth,
+          plan.round,
+          'DISCUSSION',
+          contextMessages,
+          lastSummary?.content
+        );
+        return { agent, message };
+      })
+    );
+
+    for (const { agent, message } of responses) {
+      if (message.content) {
+        yield { type: 'agent_message_chunk', agentId: agent.id, content: message.content };
+      }
+      this.addMessage(message);
+      this.protocol.recordAgentMessage();
+      yield { type: 'agent_message_complete', message };
+      await this.finalizeAgentMessage(agent, message, { trackDisagreements: true });
+
+      const abortReason = await this.checkLimitsAndAbort();
+      if (abortReason && abortReason.type !== 'needs_human') return true;
+    }
+
+    return false;
+  }
+
+  private async *runDiscussionRoundSummaryStream(
+    round: number,
+    summaryMode: DiscussionSummaryMode
+  ): AsyncGenerator<ConsensusEvent, boolean, unknown> {
+    await this.updateMetrics();
+    if (this.arbiter && Arbiter.needsArbitration(this.structuredState.getState())) {
+      await this.invokeArbiterIfNeeded();
+    }
+
+    yield { type: 'moderator_speaking' };
+
+    let hasReceivedContent = false;
+    const thinkingStart = Date.now();
+    let lastThinkingEmit = 0;
+
+    for await (const { chunk, message } of this.moderator.summarizeRoundStream(
+      this.config.topic,
+      this.getSummaryMessages(summaryMode),
+      round,
+      this.config.depth
+    )) {
+      if (this.shouldStop()) return false;
+
+      if (!hasReceivedContent && !chunk.content) {
+        const elapsed = Math.floor((Date.now() - thinkingStart) / 1000);
+        if (elapsed >= 5 && elapsed - lastThinkingEmit >= 5) {
+          lastThinkingEmit = elapsed;
+          yield { type: 'moderator_thinking', elapsed };
+        }
+      }
+
+      if (chunk.content) {
+        hasReceivedContent = true;
+        yield { type: 'moderator_message_chunk', content: chunk.content };
+      }
+
+      if (message) {
+        this.addMessage(message);
+        yield { type: 'moderator_message_complete', message };
+        yield { type: 'round_complete', round, summary: message.content };
+        await this.finalizeModeratorMessage(message);
+        await this.emitDecisionGate();
+        await this.saveSessionToFile();
+      }
+    }
+
+    const abortReason = await this.checkLimitsAndAbort();
+    return !!abortReason && abortReason.type !== 'needs_human';
   }
 
   /**

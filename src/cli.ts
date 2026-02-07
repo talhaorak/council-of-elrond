@@ -10,6 +10,7 @@ import { checkAvailableProviders, getDefaultProvider } from './providers/index.j
 import {
   VALID_PROVIDERS,
   VALID_ARCHETYPES,
+  VALID_ALGORITHMS,
   ARCHETYPE_DESCRIPTIONS,
   PROVIDER_NAMES,
   SUGGESTED_TEAMS,
@@ -34,6 +35,7 @@ program
   .option('-c, --config <file>', 'Configuration file (YAML or JSON)')
   .option('--team <name>', 'Use a pre-configured team template (e.g., council-of-elrond)')
   .option('-d, --depth <number>', 'Discussion depth (rounds)', '3')
+  .option('--algorithm <name>', 'Discussion algorithm: sequential | parallel-sequential | six-hats | debate | delphi')
   .option('-a, --agent <spec...>', 'Agent spec: provider:model:personality or personality')
   .option('--moderator-provider <provider>', 'Moderator LLM provider')
   .option('--moderator-model <model>', 'Moderator LLM model')
@@ -109,11 +111,36 @@ program
         return;
       }
 
-      // Web mode
+      // Web mode - with or without discussion
       if (options.web) {
         const { startServer } = await import('./ui/web/server.js');
-        await startServer(parseInt(options.port), options.workspace);
-        return;
+        const port = parseInt(options.port);
+        
+        // If topic or continue is provided, run discussion with web monitoring
+        if (options.topic || options.continue) {
+          // Start web server in background
+          console.log(chalk.blue(`\n🌐 Starting web UI at http://localhost:${port}`));
+          console.log(chalk.dim('   Monitor progress in your browser while discussion runs\n'));
+          
+          // Start server but don't await (runs in background)
+          startServer(port, options.workspace).catch(err => {
+            console.error(chalk.yellow('Web server error:'), err.message);
+          });
+          
+          // Small delay to let server start
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Continue to headless run or continue session
+          if (options.continue) {
+            await continueSession(options.continue, options, workspace);
+            return;
+          }
+          // Fall through to headless run below
+        } else {
+          // Web-only mode (no discussion)
+          await startServer(port, options.workspace);
+          return;
+        }
       }
 
       // Continue previous session
@@ -273,6 +300,12 @@ program
  * Run headless discussion
  */
 async function runHeadless(options: any, workspace: WorkspaceManager) {
+  if (options.algorithm && !VALID_ALGORITHMS.includes(options.algorithm)) {
+    throw new Error(
+      `Invalid algorithm "${options.algorithm}". Valid options: ${VALID_ALGORITHMS.join(', ')}`
+    );
+  }
+
   // Load team template if specified
   let teamTemplate = null;
   if (options.team) {
@@ -287,6 +320,7 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
     configFile: options.config,
     topic: options.topic,
     depth: parseInt(options.depth),
+    algorithm: options.algorithm,
     agents: options.agent,
     moderatorProvider: options.moderatorProvider,
     moderatorModel: options.moderatorModel,
@@ -324,13 +358,18 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
 
   if (!options.json) {
     console.log(chalk.bold(`\n🎯 Topic: ${config.topic}`));
-    console.log(chalk.dim(`   Depth: ${config.depth} rounds | Agents: ${config.agents.length}\n`));
+    console.log(
+      chalk.dim(
+        `   Depth: ${config.depth} rounds | Agents: ${config.agents.length} | Algorithm: ${config.algorithm || 'sequential'}\n`
+      )
+    );
   }
 
   // Save config to workspace
   await workspace.saveConfig({
     topic: config.topic,
     depth: config.depth,
+    algorithm: config.algorithm,
     agents: config.agents.map(a => ({
       provider: a.provider,
       model: a.model,
@@ -447,6 +486,12 @@ async function runHeadless(options: any, workspace: WorkspaceManager) {
  * Continue a previous session
  */
 async function continueSession(sessionId: string, options: any, workspace: WorkspaceManager) {
+  if (options.algorithm && !VALID_ALGORITHMS.includes(options.algorithm)) {
+    throw new Error(
+      `Invalid algorithm "${options.algorithm}". Valid options: ${VALID_ALGORITHMS.join(', ')}`
+    );
+  }
+
   const manager = new SessionManager();
   const session = await manager.load(sessionId);
 
@@ -458,6 +503,10 @@ async function continueSession(sessionId: string, options: any, workspace: Works
     console.log(chalk.bold(`\n📝 Continuing session: ${sessionId}`));
     console.log(chalk.dim(`   Topic: ${session.config.topic}`));
     console.log(chalk.dim(`   Previous rounds: ${session.currentRound}\n`));
+  }
+
+  if (options.algorithm) {
+    session.config.algorithm = options.algorithm;
   }
 
   const additionalRounds = parseInt(options.depth) || 2;

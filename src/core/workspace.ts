@@ -18,6 +18,7 @@ const STATE_FILE = 'current-state.json';
 export interface WorkspaceConfig {
   topic?: string;
   depth?: number;
+  algorithm?: string;
   agents?: Array<{
     provider: string;
     model: string;

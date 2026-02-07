@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Provider, PersonalityArchetype } from '../core/types.js';
+import type { Provider, PersonalityArchetype, DiscussionAlgorithmName } from '../core/types.js';
 
 /**
  * All valid providers
@@ -25,6 +25,17 @@ export const VALID_ARCHETYPES: PersonalityArchetype[] = [
   'devils-advocate',
   'analyst',
   'mediator',
+];
+
+/**
+ * All supported discussion algorithms
+ */
+export const VALID_ALGORITHMS: DiscussionAlgorithmName[] = [
+  'sequential',
+  'parallel-sequential',
+  'six-hats',
+  'debate',
+  'delphi',
 ];
 
 /**
@@ -72,6 +83,7 @@ export const CliArgsSchema = z.object({
   topic: z.string().optional(),
   config: z.string().optional(),
   depth: z.coerce.number().int().min(1).max(10).optional(),
+  algorithm: z.string().optional(),
   agent: z.array(z.string()).optional(),
   moderatorProvider: z.string().optional(),
   moderatorModel: z.string().optional(),
@@ -153,6 +165,13 @@ export function isValidProvider(provider: string): provider is Provider {
  */
 export function isValidArchetype(archetype: string): archetype is PersonalityArchetype {
   return VALID_ARCHETYPES.includes(archetype as PersonalityArchetype);
+}
+
+/**
+ * Validate algorithm string
+ */
+export function isValidAlgorithm(algorithm: string): algorithm is DiscussionAlgorithmName {
+  return VALID_ALGORITHMS.includes(algorithm as DiscussionAlgorithmName);
 }
 
 /**
