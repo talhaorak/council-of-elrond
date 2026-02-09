@@ -1,5 +1,10 @@
 # 🏔️ Council of Elrond (Bot Consensus)
 
+![GitHub License](https://img.shields.io/github/license/talhaorak/council-of-elrond)
+![GitHub last commit](https://img.shields.io/github/last-commit/talhaorak/council-of-elrond)
+[![CI](https://github.com/talhaorak/council-of-elrond/actions/workflows/ci.yml/badge.svg)](https://github.com/talhaorak/council-of-elrond/actions/workflows/ci.yml) 
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](buymeacoffee.com/talhao)
+
 <p align="center">
   <img src="assets/council-of-elrond-banner.jpg" alt="Council of Elrond - LLM Edition" width="800"/>
   <br/>
