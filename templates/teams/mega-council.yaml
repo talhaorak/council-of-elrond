@@ -123,3 +123,18 @@ agents:
         tone: provocative, incisive
         verbosity: moderate
         formality: casual
+
+moderator:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4-5
+  temperature: 0.4
+
+arbiter:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4-5
+
+limits:
+  maxCostUsd: 10.0
+  maxDurationMs: 2700000  # 45 minutes
+  maxBlockers: 50
+  requireHumanDecision: false
